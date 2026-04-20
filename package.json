@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "tsx server.ts",
     "build": "vite build",
+    "build:server": "tsc server.ts --outDir dist --allowJs --esModuleInterop --skipLibCheck || true",
+    "start": "tsx server.ts",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit"
