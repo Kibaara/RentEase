@@ -5,6 +5,7 @@ import Auth from './components/Auth';
 import TenantDashboard from './components/TenantDashboard';
 import AgentDashboard from './components/AgentDashboard';
 import LandlordDashboard from './components/LandlordDashboard';
+import UserManual from './components/UserManual';
 import { Loader2 } from 'lucide-react';
 
 export default function App() {

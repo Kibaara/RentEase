@@ -3,7 +3,7 @@ import { api } from '../services/api';
 import { 
   Home, Droplets, Trash2, DollarSign, Wrench, LogOut, 
   Send, History, AlertCircle, CheckCircle2, Clock, LayoutDashboard, CreditCard,
-  ChevronLeft, ChevronRight, Loader2, Shield, DoorOpen, Menu, X, FileText
+  ChevronLeft, ChevronRight, Loader2, Shield, DoorOpen, Menu, X, FileText, BookOpen
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
@@ -445,7 +445,7 @@ export default function TenantDashboard({ onLogout }: any) {
 
         <button 
           onClick={handleSignOut}
-          className={`flex items-center ${isCollapsed ? 'justify-center' : 'gap-3 px-3'} py-2 text-zinc-500 hover:text-zinc-100 transition-all rounded-md hover:bg-zinc-900`}
+          className={`flex items-center ${isCollapsed ? 'justify-center' : 'gap-3 px-3'} py-2 text-zinc-500 hover:text-rose-500 transition-all rounded-md hover:bg-zinc-900`}
           title={isCollapsed ? "Sign Out" : ""}
         >
           <LogOut className="h-5 w-5" />

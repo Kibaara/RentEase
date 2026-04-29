@@ -3,9 +3,9 @@ import { api } from '../services/api';
 import { 
   LayoutDashboard, Home, Users, CreditCard, Receipt, BarChart3, LogOut, 
   Plus, Search, MoreVertical, TrendingUp, TrendingDown, DollarSign, 
-  CheckCircle2, Clock, AlertCircle, Calendar, Download, Wrench, Loader2,
+  CheckCircle2, Clock, AlertCircle, Calendar, Download, Wrench, Loader2, Check,
   ChevronLeft, ChevronRight, X, Droplets, Trash2, DoorOpen, Menu, Phone, Mail, FileText,
-  Shield, Activity, Globe, Eye
+  Shield, Activity, Globe, Eye, BookOpen
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format, startOfMonth, endOfMonth, isWithinInterval, parseISO } from 'date-fns';
@@ -193,7 +193,7 @@ export default function LandlordDashboard({ onLogout }: any) {
 
         <button 
           onClick={handleSignOut}
-          className={`flex items-center ${isCollapsed ? 'justify-center' : 'gap-3 px-3'} py-2 text-zinc-500 hover:text-zinc-100 transition-all rounded-md hover:bg-zinc-900`}
+          className={`flex items-center ${isCollapsed ? 'justify-center' : 'gap-3 px-3'} py-2 text-zinc-500 hover:text-rose-500 transition-all rounded-md hover:bg-zinc-900`}
           title={isCollapsed ? "Sign Out" : ""}
         >
           <LogOut className="h-5 w-5" />
@@ -225,7 +225,7 @@ export default function LandlordDashboard({ onLogout }: any) {
             {activeTab === 'units' && <UnitsTab units={units} tenants={tenants} payments={payments} onRefresh={refresh} />}
             {activeTab === 'tenants' && <TenantsTab tenants={tenants} payments={payments} onRefresh={refresh} />}
             {activeTab === 'agents' && <AgentsTab agents={agents} onRefresh={refresh} />}
-            {activeTab === 'expenses' && <ExpensesTab expenses={expenses} requests={requests} waterReadings={waterReadings} />}
+            {activeTab === 'expenses' && <ExpensesTab expenses={expenses} requests={requests} waterReadings={waterReadings} onRefresh={refresh} />}
             {activeTab === 'invoices' && <InvoicesTab tenants={tenants} onRefresh={refresh} />}
             {activeTab === 'reports' && <ReportsTab payments={payments} expenses={expenses} tenants={tenants} serviceRequests={requests} units={units} onRefresh={refresh} />}
             {activeTab === 'audit' && <AuditLogsTab />}
@@ -277,15 +277,36 @@ function OverviewTab({ units, tenants, payments, expenses, serviceRequests, stat
     const occupiedUnits = units.filter((u: any) => u.status === 'OCCUPIED').length;
     const vacantUnits = units.filter((u: any) => u.status === 'VACANT').length;
     const pendingRefunds = serviceRequests.filter((r: any) => r.type === 'MOVE_OUT' && r.status === 'AWAITING_LANDLORD_APPROVAL');
+    const pendingCommissions = expenses.filter((e: any) => e.type === 'COMMISSION' && e.status === 'PENDING');
     const chartData = generateChartData(payments, expenses);
 
-    return { monthlyRevenue, totalDeposits, totalOutstanding, monthlyExpenses, occupiedUnits, vacantUnits, pendingRefunds, chartData };
+    return { monthlyRevenue, totalDeposits, totalOutstanding, monthlyExpenses, occupiedUnits, vacantUnits, pendingRefunds, pendingCommissions, chartData };
   }, [units, tenants, payments, expenses, serviceRequests, serverStats]);
 
-  const { monthlyRevenue, totalDeposits, totalOutstanding, monthlyExpenses, occupiedUnits, vacantUnits, pendingRefunds, chartData } = stats;
+  const { monthlyRevenue, totalDeposits, totalOutstanding, monthlyExpenses, occupiedUnits, vacantUnits, pendingRefunds, pendingCommissions, chartData } = stats;
 
   return (
     <div className="space-y-8">
+      {pendingCommissions.length > 0 && (
+        <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="bg-emerald-500/20 p-2 rounded-lg">
+              <Receipt className="h-5 w-5 text-emerald-500" />
+            </div>
+            <div>
+              <div className="text-sm font-bold text-emerald-500">Agent Commission Request</div>
+              <div className="text-xs text-emerald-500/70">{pendingCommissions.length} commission request(s) awaiting your approval.</div>
+            </div>
+          </div>
+          <button 
+            onClick={() => onNavigate('expenses')}
+            className="bg-emerald-500 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 hover:bg-emerald-600 transition-all shrink-0"
+          >
+            Review <ChevronRight className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
       {pendingRefunds.length > 0 && (
         <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -642,9 +663,20 @@ function TenantsTab({ tenants, onRefresh }: any) {
   );
 }
 
-function ExpensesTab({ expenses, requests, waterReadings }: any) {
+function ExpensesTab({ expenses, requests, waterReadings, onRefresh }: any) {
   const communalReadings = waterReadings.filter((r: any) => r.type === 'COMMUNAL');
   const tenantReadings = waterReadings.filter((r: any) => r.type === 'TENANT');
+  const [selectedCommission, setSelectedCommission] = useState<any>(null);
+
+  const handleApproveCommission = async (id: string) => {
+    try {
+      await api.expenses.update(id, { status: 'APPROVED' });
+      onRefresh();
+      setSelectedCommission(null);
+    } catch (e: any) {
+      alert("Error approving: " + e.message);
+    }
+  };
 
   return (
     <div className="grid gap-12 lg:grid-cols-3">
@@ -661,18 +693,43 @@ function ExpensesTab({ expenses, requests, waterReadings }: any) {
                     <th className="px-6 py-4">Date</th>
                     <th className="px-6 py-4">Type</th>
                     <th className="px-6 py-4">Description</th>
+                    <th className="px-6 py-4">Status</th>
                     <th className="px-6 py-4 text-right">Amount</th>
+                    <th className="px-6 py-4"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-zinc-900">
-                  {expenses.map((e: any) => (
+                  {[...expenses].sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).map((e: any) => (
                     <tr key={e.id} className="hover:bg-zinc-900/30 transition-all">
                       <td className="px-6 py-4 text-xs text-zinc-500">{format(new Date(e.createdAt), 'MMM d, yyyy')}</td>
                       <td className="px-6 py-4">
                         <span className="bg-zinc-800 text-zinc-300 px-2 py-1 rounded text-[10px] font-bold uppercase">{e.type}</span>
                       </td>
                       <td className="px-6 py-4 text-sm text-zinc-400">{e.description}</td>
+                      <td className="px-6 py-4">
+                        <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase ${e.status === 'PENDING' ? 'bg-amber-500/20 text-amber-500' : 'bg-emerald-500/20 text-emerald-500'}`}>
+                          {e.status || 'APPROVED'}
+                        </span>
+                      </td>
                       <td className="px-6 py-4 text-right font-semibold">KSH {e.amount.toLocaleString()}</td>
+                      <td className="px-6 py-4 text-right">
+                        {e.type === 'COMMISSION' && e.status === 'PENDING' && (
+                          <button 
+                            onClick={() => setSelectedCommission(e)}
+                            className="bg-emerald-500 text-white px-3 py-1 rounded text-xs font-bold hover:bg-emerald-600 transition"
+                          >
+                            Review
+                          </button>
+                        )}
+                        {e.type === 'COMMISSION' && e.status === 'APPROVED' && e.metadata && (
+                           <button 
+                             onClick={() => setSelectedCommission(e)}
+                             className="text-zinc-500 hover:text-zinc-300 text-xs font-bold"
+                           >
+                             View Breakdown
+                           </button>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -756,6 +813,13 @@ function ExpensesTab({ expenses, requests, waterReadings }: any) {
           </div>
         </section>
       </div>
+      {selectedCommission && (
+        <CommissionReviewModal 
+          expense={selectedCommission} 
+          onClose={() => setSelectedCommission(null)} 
+          onApprove={() => handleApproveCommission(selectedCommission.id)} 
+        />
+      )}
     </div>
   );
 }
@@ -984,10 +1048,12 @@ function ReportsTab({ payments, expenses, tenants, serviceRequests, units, onRef
                   { name: 'Cleaning', value: expenses.filter((e: any) => e.type === 'CLEANING').reduce((sum: number, e: any) => sum + e.amount, 0), color: '#3b82f6' },
                   { name: 'Electricity', value: expenses.filter((e: any) => e.type === 'ELECTRICITY').reduce((sum: number, e: any) => sum + e.amount, 0), color: '#eab308' },
                   { name: 'Water', value: expenses.filter((e: any) => e.type === 'WATER').reduce((sum: number, e: any) => sum + e.amount, 0), color: '#06b6d4' },
+                  { name: 'Maintenance', value: expenses.filter((e: any) => e.type === 'MAINTENANCE').reduce((sum: number, e: any) => sum + e.amount, 0), color: '#f97316' },
+                  { name: 'Commission', value: expenses.filter((e: any) => e.type === 'COMMISSION').reduce((sum: number, e: any) => sum + e.amount, 0), color: '#10b981' },
                   { name: 'Other', value: expenses.filter((e: any) => e.type === 'OTHER').reduce((sum: number, e: any) => sum + e.amount, 0), color: '#a855f7' },
                 ]}
                 layout="vertical"
-                margin={{ top: 0, right: 30, left: 40, bottom: 0 }}
+                margin={{ top: 0, right: 30, left: 60, bottom: 0 }}
               >
                 <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" horizontal={false} />
                 <XAxis type="number" hide />
@@ -1009,6 +1075,8 @@ function ReportsTab({ payments, expenses, tenants, serviceRequests, units, onRef
                     { name: 'Cleaning', color: '#3b82f6' },
                     { name: 'Electricity', color: '#eab308' },
                     { name: 'Water', color: '#06b6d4' },
+                    { name: 'Maintenance', color: '#f97316' },
+                    { name: 'Commission', color: '#10b981' },
                     { name: 'Other', color: '#a855f7' },
                   ].map((entry, index) => (
                     <Cell key={`cell-${index}`} fill={entry.color} />
@@ -1418,6 +1486,7 @@ function TenantDetailsModal({ tenant, onClose, onRefresh }: any) {
     phone: tenant.phone || '',
     totalBalance: tenant.totalBalance || 0,
     depositAmount: tenant.depositAmount || 0,
+    waterReading: tenant.waterReading || 0,
     status: tenant.status,
     isMovedIn: tenant.isMovedIn
   });
@@ -1487,6 +1556,16 @@ function TenantDetailsModal({ tenant, onClose, onRefresh }: any) {
                   type="number"
                   value={formData.depositAmount}
                   onChange={e => setFormData({...formData, depositAmount: parseFloat(e.target.value)})}
+                  className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm text-zinc-100 focus:ring-1 focus:ring-emerald-500/50"
+                  step="0.01"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Water Reading</label>
+                <input 
+                  type="number"
+                  value={formData.waterReading}
+                  onChange={e => setFormData({...formData, waterReading: parseFloat(e.target.value)})}
                   className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm text-zinc-100 focus:ring-1 focus:ring-emerald-500/50"
                   step="0.01"
                 />
@@ -1646,6 +1725,77 @@ function TenantDetailsModal({ tenant, onClose, onRefresh }: any) {
 );
 }
 
+function CommissionReviewModal({ expense, onClose, onApprove }: any) {
+  let meta: any = {};
+  if (expense.metadata) {
+    try {
+      meta = typeof expense.metadata === 'string' ? JSON.parse(expense.metadata) : expense.metadata;
+    } catch(e) {}
+  }
+
+  const breakdown = meta.breakdown || [];
+
+  return (
+    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <motion.div 
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1 }}
+        className="bg-zinc-950 border border-zinc-800 rounded-2xl w-full max-w-2xl overflow-hidden shadow-2xl flex flex-col max-h-[90vh]"
+      >
+        <div className="p-6 border-b border-zinc-800 flex justify-between items-center shrink-0">
+          <div>
+            <h3 className="text-xl font-bold">Review Commission Request</h3>
+            <p className="text-zinc-500 text-sm mt-1">{expense.description}</p>
+          </div>
+          <button onClick={onClose} className="p-2 bg-zinc-900 rounded-full text-zinc-400 hover:text-white transition">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        
+        <div className="p-6 overflow-y-auto flex-1">
+          <div className="mb-6 p-4 bg-zinc-900 rounded-xl flex justify-between items-center border border-zinc-800">
+            <div className="text-zinc-400 font-bold uppercase tracking-widest text-xs">Total Requested</div>
+            <div className="text-3xl font-bold text-emerald-400 tracking-tighter">KSH {expense.amount.toLocaleString()}</div>
+          </div>
+          <h4 className="text-sm font-bold text-zinc-500 uppercase tracking-wider mb-4 px-1">Included verified rent payments</h4>
+          {breakdown.length === 0 ? (
+            <p className="text-zinc-500 italic text-sm">No details provided.</p>
+          ) : (
+            <div className="space-y-3">
+              {breakdown.map((item: any, idx: number) => (
+                <div key={idx} className="flex justify-between items-center p-4 bg-zinc-900/50 rounded-lg border border-zinc-800/50 hover:bg-zinc-800/50 transition-colors">
+                  <div>
+                    <div className="font-bold text-zinc-200">{item.tenantName || 'Unknown Tenant'} <span className="text-xs text-zinc-500 font-normal ml-2 bg-zinc-800 px-2 py-0.5 rounded">Unit {item.unitNumber}</span></div>
+                    <div className="text-xs text-zinc-500 mt-2 font-mono">{format(new Date(item.date), 'MMM d, yyyy h:mm a')}</div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-xs text-zinc-400 font-medium">Rent Portion: KSH {item.rentPortion?.toLocaleString()}</div>
+                    <div className="text-sm font-bold text-emerald-400 mt-1">Comm: KSH {item.commission?.toLocaleString()}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="p-6 border-t border-zinc-800 bg-zinc-900/50 flex gap-4 shrink-0">
+          <button onClick={onClose} className="flex-1 py-3 text-zinc-400 font-bold hover:text-white transition bg-zinc-800 hover:bg-zinc-700 rounded-xl">
+            Close
+          </button>
+          {expense.status === 'PENDING' && (
+            <button 
+              onClick={onApprove}
+              className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white font-bold rounded-xl py-3 transition flex justify-center items-center gap-2"
+            >
+              <Check className="h-5 w-5" /> Approve Commission
+            </button>
+          )}
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
 function XCircle({ className }: any) {
   return <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><circle cx="12" cy="12" r="10"/><line x1="15" x2="9" y1="9" y2="15"/><line x1="9" x2="15" y1="9" y2="15"/></svg>;
 }
@@ -1708,19 +1858,22 @@ function InvoicesTab({ tenants, onRefresh }: any) {
     fetchInvoices();
   }, []);
 
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [generateMessage, setGenerateMessage] = useState<{type: 'success'|'error', text: string} | null>(null);
+
   const handleGenerate = async () => {
-    if (!confirm('This will generate unpaid invoices for all active tenants for the current month. Continue?')) return;
-    
     setGenerating(true);
+    setGenerateMessage(null);
     try {
       const result = await api.invoices.generate();
-      alert(`Success! Created ${result.createdCount} new invoices.`);
+      setGenerateMessage({ type: 'success', text: `Success! Created ${result.createdCount} new invoices.` });
       fetchInvoices();
       onRefresh();
     } catch (e: any) {
-      alert(e.message);
+      setGenerateMessage({ type: 'error', text: e.message });
     } finally {
       setGenerating(false);
+      setShowConfirm(false);
     }
   };
 
@@ -1743,14 +1896,39 @@ function InvoicesTab({ tenants, onRefresh }: any) {
             className="w-full bg-zinc-900 border border-zinc-800 rounded-lg pl-10 pr-4 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-zinc-700"
           />
         </div>
-        <button 
-          onClick={handleGenerate}
-          disabled={generating}
-          className="w-full sm:w-auto bg-zinc-100 text-zinc-950 px-4 py-2 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 hover:bg-zinc-200 transition-all disabled:opacity-50"
-        >
-          {generating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-          Generate Monthly Invoices
-        </button>
+        <div className="flex flex-col items-end gap-2">
+          {generateMessage ? (
+            <div className={`text-sm font-bold flex items-center gap-2 ${generateMessage.type === 'success' ? 'text-emerald-500' : 'text-red-500'}`}>
+              {generateMessage.type === 'success' ? <Check className="h-4 w-4" /> : <X className="h-4 w-4" />} {generateMessage.text}
+            </div>
+          ) : showConfirm ? (
+            <div className="flex flex-col sm:flex-row items-center gap-2">
+              <span className="text-xs text-zinc-400">Generate unpaid invoices?</span>
+              <button 
+                onClick={handleGenerate}
+                disabled={generating}
+                className="bg-zinc-100 text-zinc-950 px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center justify-center gap-2 hover:bg-zinc-200 transition-all disabled:opacity-50"
+              >
+                {generating ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />} Yes
+              </button>
+              <button 
+                onClick={() => setShowConfirm(false)}
+                disabled={generating}
+                className="bg-zinc-800 text-white px-3 py-1.5 rounded-lg text-xs font-semibold hover:bg-zinc-700 transition-all"
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <button 
+              onClick={() => setShowConfirm(true)}
+              className="w-full sm:w-auto bg-zinc-100 text-zinc-950 px-4 py-2 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 hover:bg-zinc-200 transition-all"
+            >
+              <Plus className="h-4 w-4" />
+              Generate Monthly Invoices
+            </button>
+          )}
+        </div>
       </div>
 
       <Card className="overflow-hidden">

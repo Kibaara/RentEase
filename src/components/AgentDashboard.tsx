@@ -3,10 +3,10 @@ import { api } from '../services/api';
 import { 
   Users, CreditCard, Wrench, Receipt, Settings, LogOut, 
   Plus, Check, X, Droplets, Zap, Brush, MoreVertical, Search,
-  ChevronLeft, ChevronRight, Loader2, History, Calculator, DoorOpen, Menu, Phone, Mail
+  ChevronLeft, ChevronRight, Loader2, History, Calculator, DoorOpen, Menu, Phone, Mail, BookOpen
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { format } from 'date-fns';
+import { format, startOfMonth, endOfMonth, isWithinInterval, parseISO } from 'date-fns';
 
 export default function AgentDashboard({ onLogout }: any) {
   const [activeTab, setActiveTab] = useState('tenants');
@@ -21,6 +21,71 @@ export default function AgentDashboard({ onLogout }: any) {
   const [billingStatus, setBillingStatus] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
+
+  const { currentMonthRentPaid, commissionBreakdown } = useMemo(() => {
+    const start = startOfMonth(new Date());
+    const end = endOfMonth(new Date());
+    
+    let total = 0;
+    const breakdown: any[] = [];
+
+    payments
+      .filter((p: any) => p.status === 'APPROVED' && isWithinInterval(parseISO(p.createdAt), { start, end }))
+      .forEach((p: any) => {
+        let rentPart = 0;
+        const tenant = tenants.find((t: any) => t.id === p.tenantId);
+        
+        if (p.paymentType === 'RENT') rentPart = p.amount;
+        if (p.paymentType === 'ALL') rentPart = Math.min(tenant?.rentAmount || 0, p.amount);
+        if (p.paymentType === 'MOVE_IN') rentPart = p.amount / 2;
+
+        if (rentPart > 0) {
+          total += rentPart;
+          breakdown.push({
+            paymentId: p.id,
+            tenantName: tenant?.name,
+            unitNumber: tenant?.unitNumber,
+            rentPortion: rentPart,
+            commission: rentPart * 0.06,
+            date: p.createdAt
+          });
+        }
+      });
+      
+    return { currentMonthRentPaid: total, commissionBreakdown: breakdown };
+  }, [payments, tenants]);
+
+  const currentMonthCommission = currentMonthRentPaid * 0.06;
+
+  const currentMonthStr = format(new Date(), 'MMMM yyyy');
+  const hasRequestedCommission = useMemo(() => {
+    return expenses.some(e => e.type === 'COMMISSION' && e.description.includes(currentMonthStr));
+  }, [expenses, currentMonthStr]);
+
+  const [requestingCommission, setRequestingCommission] = useState(false);
+  const [showCommissionConfirm, setShowCommissionConfirm] = useState(false);
+  const [commissionMessage, setCommissionMessage] = useState<{type: 'success'|'error', text: string} | null>(null);
+
+  const handleRequestCommission = async () => {
+    setRequestingCommission(true);
+    setCommissionMessage(null);
+    try {
+      await api.expenses.create({
+        type: 'COMMISSION',
+        description: `Agent Commission for ${currentMonthStr}`,
+        amount: currentMonthCommission,
+        status: 'PENDING',
+        metadata: { month: currentMonthStr, breakdown: commissionBreakdown }
+      });
+      refresh();
+      setCommissionMessage({ type: 'success', text: 'Commission request sent to Landlord!' });
+    } catch (err: any) {
+      setCommissionMessage({ type: 'error', text: err.message || 'Failed to request commission' });
+    } finally {
+      setRequestingCommission(false);
+      setShowCommissionConfirm(false);
+    }
+  };
 
   const refresh = () => setRefreshTrigger(prev => prev + 1);
 
@@ -174,7 +239,7 @@ export default function AgentDashboard({ onLogout }: any) {
 
         <button 
           onClick={handleSignOut}
-          className={`flex items-center ${isCollapsed ? 'justify-center' : 'gap-3 px-3'} py-2 text-zinc-500 hover:text-zinc-100 transition-all rounded-md hover:bg-zinc-900`}
+          className={`flex items-center ${isCollapsed ? 'justify-center' : 'gap-3 px-3'} py-2 text-zinc-500 hover:text-rose-500 transition-all rounded-md hover:bg-zinc-900`}
           title={isCollapsed ? "Sign Out" : ""}
         >
           <LogOut className="h-5 w-5" />
@@ -193,6 +258,73 @@ export default function AgentDashboard({ onLogout }: any) {
             {format(new Date(), 'EEEE, MMMM do')}
           </div>
         </header>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
+          <Card className="p-6">
+            <div className="text-zinc-500 text-sm font-semibold mb-2 uppercase tracking-tight">Rent Collected This Month</div>
+            <div className="text-3xl font-bold tracking-tighter">KSH {currentMonthRentPaid.toLocaleString()}</div>
+          </Card>
+          <Card className="p-6 relative">
+            <div className="text-zinc-500 text-sm font-semibold mb-2 uppercase tracking-tight">Agent Commission (6%) / {currentMonthStr}</div>
+            <div className="text-3xl font-bold tracking-tighter text-emerald-400 mb-4">KSH {currentMonthCommission.toLocaleString()}</div>
+            
+            {hasRequestedCommission ? (
+              <div className="text-sm font-bold text-emerald-500 flex items-center gap-2">
+                <Check className="h-4 w-4" /> Commission Request Logged
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {commissionMessage && (
+                  <div className={`text-sm font-bold flex items-center justify-between gap-2 px-3 py-2 rounded-lg ${commissionMessage.type === 'success' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-red-500/10 text-red-500'}`}>
+                    <div className="flex items-center gap-2">
+                      {commissionMessage.type === 'success' ? <Check className="h-4 w-4" /> : <X className="h-4 w-4" />} {commissionMessage.text}
+                    </div>
+                    {commissionMessage.type === 'error' && (
+                      <button onClick={() => setCommissionMessage(null)} className="hover:opacity-70"><X className="h-4 w-4" /></button>
+                    )}
+                  </div>
+                )}
+                {commissionMessage?.type !== 'success' && (
+                  showCommissionConfirm ? (
+                    <div className="flex flex-col gap-3">
+                      <p className="text-xs text-zinc-400">Request KSH {currentMonthCommission.toLocaleString()} from Landlord?</p>
+                      <div className="flex gap-2">
+                        <button 
+                          onClick={handleRequestCommission}
+                          disabled={requestingCommission}
+                          className="flex-1 bg-emerald-500 hover:bg-emerald-600 disabled:bg-emerald-900 disabled:text-emerald-700 text-white text-xs font-bold px-3 py-2 rounded-lg transition-colors flex items-center justify-center gap-2"
+                        >
+                          {requestingCommission ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />} Confirm
+                        </button>
+                        <button 
+                          onClick={() => setShowCommissionConfirm(false)}
+                          disabled={requestingCommission}
+                          className="flex-1 bg-zinc-800 hover:bg-zinc-700 disabled:bg-zinc-900 text-white text-xs font-bold px-3 py-2 rounded-lg transition-colors"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button 
+                      onClick={() => {
+                        if (billingStatus?.missingReadings > 0) {
+                          setCommissionMessage({ type: 'error', text: `Please record all water meter readings (${billingStatus.missingReadings} pending) first.` });
+                        } else {
+                          setShowCommissionConfirm(true);
+                        }
+                      }}
+                      disabled={currentMonthCommission === 0}
+                      className="bg-emerald-500 w-fit hover:bg-emerald-600 disabled:bg-zinc-800 disabled:text-zinc-600 text-white text-sm font-bold px-4 py-2 rounded-lg transition-colors flex items-center justify-center gap-2"
+                    >
+                      Request Commission Approval
+                    </button>
+                  )
+                )}
+              </div>
+            )}
+          </Card>
+        </div>
 
         {billingStatus && billingStatus.missingReadings > 0 && (
           <div className="mb-8 p-4 bg-blue-500/10 border border-blue-500/20 rounded-xl flex items-start gap-4">
@@ -723,23 +855,23 @@ function MoveOutResolutionModal({ request, tenant, units, onRefresh, onClose }: 
 
 function WaterReadingModal({ target, type, onClose, onRefresh }: any) {
   const [presentReading, setPresentReading] = useState(0);
+  const [previousReading, setPreviousReading] = useState(type === 'TENANT' ? (target?.waterReading || 0) : 0);
   const [loading, setLoading] = useState(false);
   const [config, setConfig] = useState<any>(null);
-
-  const previousReading = type === 'TENANT' ? (target?.waterReading || 0) : 0; // For communal we might want to fetch last reading
 
   useEffect(() => {
     api.config.get().then(setConfig);
     if (type === 'COMMUNAL') {
       api.waterReadings.list({ type: 'COMMUNAL' }).then(readings => {
         if (readings && readings.length > 0) {
+          setPreviousReading(readings[0].presentReading);
           setPresentReading(readings[0].presentReading);
         }
       });
     } else {
-      setPresentReading(previousReading);
+      setPresentReading(target?.waterReading || 0);
     }
-  }, []);
+  }, [type, target]);
 
   const rate = config?.waterRate || 100;
   const consumption = Math.max(0, presentReading - previousReading);

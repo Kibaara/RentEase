@@ -63,6 +63,7 @@ export const api = {
   expenses: {
     list: () => request('/expenses'),
     create: (data: any) => request('/expenses', { method: 'POST', body: JSON.stringify(data) }),
+    update: (id: string, data: any) => request(`/expenses/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   },
   config: {
     get: () => request('/config'),

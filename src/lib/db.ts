@@ -96,8 +96,13 @@ export const initDb = async () => {
         tokens DOUBLE PRECISION,
         reading DOUBLE PRECISION,
         "prevReading" DOUBLE PRECISION,
-        "createdAt" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        "createdAt" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        status TEXT DEFAULT 'APPROVED',
+        metadata TEXT
       );
+
+      ALTER TABLE expenses ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'APPROVED';
+      ALTER TABLE expenses ADD COLUMN IF NOT EXISTS metadata TEXT;
 
       CREATE TABLE IF NOT EXISTS invoices (
         id TEXT PRIMARY KEY,

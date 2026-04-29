@@ -110,7 +110,7 @@ async function startServer() {
   });
 
   app.post("/api/auth/register", async (req: any, res) => {
-    const { name, email, role, unitNumber, rentAmount, garbageFee, phone, password, totalBalance } = req.body;
+    const { name, email, role, unitNumber, rentAmount, garbageFee, phone, password, totalBalance, waterReading } = req.body;
     
     // Check if any landlord exists
     const landlord = await db.prepare("SELECT id FROM users WHERE role = 'LANDLORD'").get();
@@ -125,9 +125,9 @@ async function startServer() {
     
     try {
       await db.prepare(`
-        INSERT INTO users (id, name, email, "passwordHash", role, "unitNumber", "rentAmount", "garbageFee", phone, "registeredBy", "totalBalance")
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(id, name, email, hash, role || 'TENANT', unitNumber || null, rentAmount || 0, garbageFee || 0, phone || null, req.user?.id || id, totalBalance || 0);
+        INSERT INTO users (id, name, email, "passwordHash", role, "unitNumber", "rentAmount", "garbageFee", phone, "registeredBy", "totalBalance", "waterReading")
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(id, name, email, hash, role || 'TENANT', unitNumber || null, rentAmount || 0, garbageFee || 0, phone || null, req.user?.id || id, totalBalance || 0, waterReading || 0);
       
       await auditService.log({
         userId: req.user?.id || id,
@@ -255,6 +255,7 @@ async function startServer() {
         if (tenant) {
           if (payment.paymentType === 'MOVE_IN') {
             const depositPortion = payment.amount / 2;
+            const rentPortion = payment.amount / 2;
             await db.prepare('UPDATE users SET "totalBalance" = "totalBalance" - ?, "depositAmount" = "depositAmount" + ?, "isMovedIn" = TRUE WHERE id = ?')
               .run(payment.amount, depositPortion, tenant.id);
           } else {
@@ -374,10 +375,10 @@ async function startServer() {
 
   app.post("/api/expenses", requireAuth, isStaff, async (req: any, res) => {
     try {
-      const { type, description, amount, unitNumber, requestId, tokens, reading } = req.body;
+      const { type, description, amount, unitNumber, requestId, tokens, reading, status, metadata } = req.body;
       const id = crypto.randomUUID();
-      await db.prepare('INSERT INTO expenses (id, type, description, amount, "unitNumber", "requestId", tokens, reading) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(id, type, description, amount, unitNumber, requestId || null, tokens || null, reading || null);
+      await db.prepare('INSERT INTO expenses (id, type, description, amount, "unitNumber", "requestId", tokens, reading, status, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(id, type, description, amount, unitNumber, requestId || null, tokens || null, reading || null, status || 'APPROVED', metadata ? JSON.stringify(metadata) : null);
       
       await auditService.log({
         userId: req.user.id,
@@ -385,11 +386,32 @@ async function startServer() {
         action: 'CREATE_EXPENSE',
         entityType: 'EXPENSE',
         entityId: id,
-        details: { type, amount, unitNumber },
+        details: { type, amount, unitNumber, status },
         ipAddress: req.ip
       });
 
       res.json({ success: true, id });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.patch("/api/expenses/:id", requireAuth, isLandlord, async (req: any, res) => {
+    try {
+      const { status } = req.body;
+      const id = req.params.id;
+      await db.prepare('UPDATE expenses SET status = ? WHERE id = ?').run(status, id);
+      
+      await auditService.log({
+        userId: req.user.id,
+        userEmail: req.user.email,
+        action: 'UPDATE_EXPENSE',
+        entityType: 'EXPENSE',
+        entityId: id,
+        details: { status },
+        ipAddress: req.ip
+      });
+      res.json({ success: true });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
