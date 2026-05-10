@@ -344,7 +344,7 @@ function OverviewTab({ units, tenants, payments, expenses, serviceRequests, stat
       <div className="grid gap-6 md:grid-cols-2">
         <Card className="p-6">
           <h3 className="text-sm font-bold text-zinc-500 uppercase tracking-widest mb-6">Revenue vs Expenses (Last 6 Months)</h3>
-          <div className="h-80 w-full relative min-h-[320px]">
+          <div className="h-80 w-full relative min-h-80">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" vertical={false} />
@@ -1076,13 +1076,12 @@ function ReportsTab({ payments, expenses, tenants, serviceRequests, units, onRef
       <div className="grid gap-6 md:grid-cols-2">
         <Card className="p-6 overflow-visible flex flex-col">
           <h4 className="text-sm font-bold text-zinc-500 uppercase mb-6">Revenue Breakdown</h4>
-          <div className="h-72 w-full relative min-h-[288px]">
+          <div className="h-72 w-full relative min-h-72">
             {revenueByType.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
-                  <Pie
-                    activeIndex={activeIndex}
-                    activeShape={renderActiveShape}
+                  <Pie 
+                    shape={renderActiveShape}
                     data={revenueByType}
                     cx="50%"
                     cy="50%"
@@ -1123,7 +1122,7 @@ function ReportsTab({ payments, expenses, tenants, serviceRequests, units, onRef
 
         <Card className="p-6 flex flex-col">
           <h4 className="text-sm font-bold text-zinc-500 uppercase mb-6 tracking-widest">Expense Categories</h4>
-          <div className="h-64 w-full relative min-h-[256px]">
+          <div className="h-64 w-full relative min-h-64">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart 
                 data={[
@@ -1239,6 +1238,7 @@ function ReportsTab({ payments, expenses, tenants, serviceRequests, units, onRef
 
 function AgentsTab({ agents, onRefresh }: any) {
   const [showRegister, setShowRegister] = useState(false);
+  const [editingAgent, setEditingAgent] = useState<any>(null);
 
   return (
     <div className="space-y-6">
@@ -1254,7 +1254,7 @@ function AgentsTab({ agents, onRefresh }: any) {
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
         {agents.map((agent: any) => (
-          <Card key={agent.id} className="p-5">
+          <Card key={agent.id} className="p-5 hover:border-zinc-700 transition-all cursor-pointer" onClick={() => setEditingAgent(agent)}>
             <div className="flex items-center gap-4">
               <div className="h-12 w-12 rounded-full bg-zinc-800 flex items-center justify-center text-zinc-400 font-bold text-lg">
                 {agent.name.charAt(0)}
@@ -1278,6 +1278,103 @@ function AgentsTab({ agents, onRefresh }: any) {
       </div>
 
       {showRegister && <RegisterAgentModal onRefresh={onRefresh} onClose={() => setShowRegister(false)} />}
+      {editingAgent && <EditAgentModal agent={editingAgent} onRefresh={onRefresh} onClose={() => setEditingAgent(null)} />}
+    </div>
+  );
+}
+
+function EditAgentModal({ agent, onClose, onRefresh }: any) {
+  const [name, setName] = useState(agent.name);
+  const [email, setEmail] = useState(agent.email);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+
+    try {
+      await api.users.update(agent.id, { name, email });
+      onRefresh();
+      onClose();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!window.confirm("Are you sure you want to remove this agent?")) return;
+    
+    setLoading(true);
+    try {
+      await api.users.delete(agent.id);
+      onRefresh();
+      onClose();
+    } catch (err: any) {
+      setError(err.message);
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <motion.div 
+        initial={{ scale: 0.9, opacity: 0 }} 
+        animate={{ scale: 1, opacity: 1 }} 
+        className="bg-zinc-900 border border-zinc-800 rounded-xl p-8 w-full max-w-md space-y-6"
+      >
+        <div className="flex justify-between items-center">
+          <h3 className="text-xl font-bold">Edit Agent</h3>
+          <button onClick={onClose} className="text-zinc-500 hover:text-zinc-400">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="space-y-2">
+            <label className="text-xs font-bold text-zinc-500 uppercase">Full Name</label>
+            <input 
+              required 
+              value={name} 
+              onChange={e => setName(e.target.value)} 
+              className="w-full bg-zinc-800 border-none rounded-lg px-4 py-2 text-sm" 
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-xs font-bold text-zinc-500 uppercase">Email Address</label>
+            <input 
+              required 
+              type="email"
+              value={email} 
+              onChange={e => setEmail(e.target.value)} 
+              className="w-full bg-zinc-800 border-none rounded-lg px-4 py-2 text-sm" 
+            />
+          </div>
+
+          {error && <div className="text-sm text-red-500">{error}</div>}
+
+          <div className="pt-4 flex gap-3">
+            <button 
+              type="button" 
+              onClick={handleDelete}
+              disabled={loading}
+              className="flex-1 bg-rose-500/10 text-rose-500 py-3 rounded-lg text-sm font-semibold hover:bg-rose-500/20 transition-all flex items-center justify-center gap-2"
+            >
+              <Trash2 className="h-4 w-4" /> Remove
+            </button>
+            <button 
+              type="submit" 
+              disabled={loading}
+              className="flex-[2] bg-emerald-500 text-black py-3 rounded-lg text-sm font-semibold hover:bg-emerald-400 transition-all flex items-center justify-center gap-2"
+            >
+              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save Changes"}
+            </button>
+          </div>
+        </form>
+      </motion.div>
     </div>
   );
 }

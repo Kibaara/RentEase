@@ -49,6 +49,7 @@ export const api = {
     list: () => request('/users'),
     create: (data: any) => request('/users', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: string, data: any) => request(`/users/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+    delete: (id: string) => request(`/users/${id}`, { method: 'DELETE' }),
   },
   payments: {
     list: () => request('/payments'),

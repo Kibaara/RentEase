@@ -726,6 +726,27 @@ async function startServer() {
     }
   });
 
+  app.delete("/api/users/:id", requireAuth, isStaff, async (req: any, res) => {
+    try {
+      const { id } = req.params;
+      await db.query('DELETE FROM users WHERE id = $1', [id]);
+      
+      await auditService.log({
+        userId: req.user.id,
+        userEmail: req.user.email,
+        action: 'DELETE_USER',
+        entityType: 'USER',
+        entityId: id,
+        details: { deleted: true },
+        ipAddress: req.ip
+      });
+
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // --- Vite middleware ---
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
