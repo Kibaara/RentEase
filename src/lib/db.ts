@@ -40,6 +40,7 @@ export const initDb = async () => {
         "finalRefundAmount" DOUBLE PRECISION DEFAULT 0,
         "finalRepairCosts" DOUBLE PRECISION DEFAULT 0,
         "moveOutDate" TEXT,
+        "moveInDate" TEXT,
         phone TEXT,
         "isPasswordSet" BOOLEAN DEFAULT FALSE,
         "registeredBy" TEXT,
@@ -54,11 +55,20 @@ export const initDb = async () => {
         status TEXT DEFAULT 'VACANT' CHECK(status IN ('VACANT', 'OCCUPIED')),
         "currentTenantId" TEXT REFERENCES users(id),
         "waterReading" DOUBLE PRECISION DEFAULT 0,
+        "type" TEXT DEFAULT '1 Bedroom',
         "createdAt" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
 
-      -- Ensure waterReading exists on units if migrating
+      -- Ensure columns exist on units if migrating
       ALTER TABLE units ADD COLUMN IF NOT EXISTS "waterReading" DOUBLE PRECISION DEFAULT 0;
+      ALTER TABLE units ADD COLUMN IF NOT EXISTS "type" TEXT DEFAULT '1 Bedroom';
+      ALTER TABLE units ADD COLUMN IF NOT EXISTS "isActive" BOOLEAN DEFAULT TRUE;
+      
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS "moveInDate" TEXT;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS "unitId" TEXT REFERENCES units(id);
+      
+      -- Populate unitId if unitNumber is present
+      UPDATE users SET "unitId" = units.id FROM units WHERE users."unitNumber" = units."unitNumber" AND users."unitId" IS NULL;
 
       CREATE TABLE IF NOT EXISTS payments (
         id TEXT PRIMARY KEY,

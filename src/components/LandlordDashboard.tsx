@@ -5,10 +5,11 @@ import {
   Plus, Search, MoreVertical, TrendingUp, TrendingDown, DollarSign, 
   CheckCircle2, Clock, AlertCircle, Calendar, Download, Wrench, Loader2, Check,
   ChevronLeft, ChevronRight, X, Droplets, Trash2, DoorOpen, Menu, Phone, Mail, FileText,
-  Shield, Activity, Globe, Eye, BookOpen
+  Shield, Activity, Globe, Eye, BookOpen, Database
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format, startOfMonth, endOfMonth, isWithinInterval, parseISO } from 'date-fns';
+import Papa from 'papaparse';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
   LineChart, Line, PieChart, Pie, Cell, Sector 
@@ -186,8 +187,10 @@ export default function LandlordDashboard({ onLogout }: any) {
           <NavItem icon={<Users />} label="Tenants" active={activeTab === 'tenants'} onClick={() => setActiveTab('tenants')} isCollapsed={isCollapsed} />
           <NavItem icon={<Users className="text-zinc-400" />} label="Agents" active={activeTab === 'agents'} onClick={() => setActiveTab('agents')} isCollapsed={isCollapsed} />
           <NavItem icon={<Receipt />} label="Expenses" active={activeTab === 'expenses'} onClick={() => setActiveTab('expenses')} isCollapsed={isCollapsed} />
+          <NavItem icon={<CreditCard />} label="Payments" active={activeTab === 'payments'} onClick={() => setActiveTab('payments')} isCollapsed={isCollapsed} />
           <NavItem icon={<FileText />} label="Invoices" active={activeTab === 'invoices'} onClick={() => setActiveTab('invoices')} isCollapsed={isCollapsed} />
           <NavItem icon={<BarChart3 />} label="Reports" active={activeTab === 'reports'} onClick={() => setActiveTab('reports')} isCollapsed={isCollapsed} />
+          <NavItem icon={<Database />} label="Records" active={activeTab === 'records'} onClick={() => setActiveTab('records')} isCollapsed={isCollapsed} />
           <NavItem icon={<Shield className="text-zinc-400" />} label="Audit Logs" active={activeTab === 'audit'} onClick={() => setActiveTab('audit')} isCollapsed={isCollapsed} />
         </nav>
 
@@ -223,11 +226,13 @@ export default function LandlordDashboard({ onLogout }: any) {
           >
             {activeTab === 'overview' && <OverviewTab units={units} tenants={tenants} payments={payments} expenses={expenses} serviceRequests={requests} stats={stats} onNavigate={setActiveTab} />}
             {activeTab === 'units' && <UnitsTab units={units} tenants={tenants} payments={payments} onRefresh={refresh} />}
-            {activeTab === 'tenants' && <TenantsTab tenants={tenants} payments={payments} onRefresh={refresh} />}
+            {activeTab === 'tenants' && <TenantsTab tenants={tenants} units={units} payments={payments} onRefresh={refresh} />}
             {activeTab === 'agents' && <AgentsTab agents={agents} onRefresh={refresh} />}
             {activeTab === 'expenses' && <ExpensesTab expenses={expenses} requests={requests} waterReadings={waterReadings} onRefresh={refresh} />}
+            {activeTab === 'payments' && <PaymentsTab payments={payments} tenants={tenants} units={units} />}
             {activeTab === 'invoices' && <InvoicesTab tenants={tenants} onRefresh={refresh} />}
             {activeTab === 'reports' && <ReportsTab payments={payments} expenses={expenses} tenants={tenants} serviceRequests={requests} units={units} onRefresh={refresh} />}
+            {activeTab === 'records' && <RecordsTab units={units} tenants={tenants} onRefresh={refresh} />}
             {activeTab === 'audit' && <AuditLogsTab />}
           </motion.div>
         </AnimatePresence>
@@ -274,8 +279,9 @@ function OverviewTab({ units, tenants, payments, expenses, serviceRequests, stat
       .filter((e: any) => isWithinInterval(parseISO(e.createdAt), { start: currentMonth, end: endOfCurrentMonth }))
       .reduce((sum: number, e: any) => sum + e.amount, 0);
 
-    const occupiedUnits = units.filter((u: any) => u.status === 'OCCUPIED').length;
-    const vacantUnits = units.filter((u: any) => u.status === 'VACANT').length;
+    const activeUnits = units.filter((u: any) => u.isActive !== 0);
+    const occupiedUnits = activeUnits.filter((u: any) => u.status === 'OCCUPIED').length;
+    const vacantUnits = activeUnits.filter((u: any) => u.status === 'VACANT').length;
     const pendingRefunds = serviceRequests.filter((r: any) => r.type === 'MOVE_OUT' && r.status === 'AWAITING_LANDLORD_APPROVAL');
     const pendingCommissions = expenses.filter((e: any) => e.type === 'COMMISSION' && e.status === 'PENDING');
     const chartData = generateChartData(payments, expenses);
@@ -441,7 +447,7 @@ function UnitsTab({ units, tenants, payments, onRefresh }: any) {
 
   const filteredUnits = useMemo(() => {
     return units.filter((u: any) => 
-      u.unitNumber.toLowerCase().includes(searchTerm.toLowerCase())
+      (u.unitNumber || '').toLowerCase().includes(searchTerm.toLowerCase())
     );
   }, [units, searchTerm]);
 
@@ -467,13 +473,23 @@ function UnitsTab({ units, tenants, payments, onRefresh }: any) {
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
         {filteredUnits.map((u: any) => {
-          const tenant = tenants.find((t: any) => t.unitNumber === u.unitNumber && t.status === 'ACTIVE') || 
-                         tenants.find((t: any) => t.unitNumber === u.unitNumber);
+          let tenant = null;
+          if (u.currentTenantId) {
+            tenant = tenants.find((t: any) => t.id === u.currentTenantId);
+          }
+          if (!tenant) {
+            tenant = tenants.find((t: any) => t.unitId === u.id && t.status === 'ACTIVE') || 
+                     tenants.find((t: any) => (t.unitNumber || '').toLowerCase() === (u.unitNumber || '').toLowerCase() && t.status === 'ACTIVE') || 
+                     tenants.find((t: any) => (t.unitNumber || '').toLowerCase() === (u.unitNumber || '').toLowerCase());
+          }
           return (
             <Card key={u.id} className="p-5 hover:border-zinc-700 transition-all cursor-pointer group relative" onClick={() => setSelectedUnit(u)}>
               <div className="flex justify-between items-start mb-4">
                 <div>
-                  <div className="text-2xl font-bold">{u.unitNumber}</div>
+                  <div className="flex items-center gap-2">
+                    <div className="text-2xl font-bold">{u.unitNumber}</div>
+                    <span className="bg-zinc-800 text-zinc-300 px-2 py-0.5 rounded text-[10px] font-bold uppercase">{u.type || '1 Bedroom'}</span>
+                  </div>
                   <div className="text-xs text-zinc-500 mt-1">Rent: KSH {u.rentAmount?.toLocaleString()}</div>
                   <div className="text-xs text-blue-500/80 mt-1">Meter: {u.waterReading || 0} units</div>
                 </div>
@@ -487,8 +503,8 @@ function UnitsTab({ units, tenants, payments, onRefresh }: any) {
                   >
                     <Wrench className="h-3 w-3 text-zinc-400" />
                   </button>
-                  <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase ${u.status === 'OCCUPIED' ? 'bg-green-500/10 text-green-500' : 'bg-zinc-800 text-zinc-400'}`}>
-                    {u.status}
+                  <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase ${u.isActive === 0 ? 'bg-red-500/10 text-red-500' : u.status === 'OCCUPIED' ? 'bg-green-500/10 text-green-500' : 'bg-zinc-800 text-zinc-400'}`}>
+                    {u.isActive === 0 ? 'INACTIVE' : u.status}
                   </span>
                 </div>
               </div>
@@ -508,21 +524,21 @@ function UnitsTab({ units, tenants, payments, onRefresh }: any) {
   );
 }
 
-function TenantsTab({ tenants, onRefresh }: any) {
+function TenantsTab({ tenants, units, onRefresh }: any) {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedTenant, setSelectedTenant] = useState<any>(null);
   
   const activeTenants = useMemo(() => {
     return tenants.filter((t: any) => 
       t.status === 'ACTIVE' && 
-      (t.name.toLowerCase().includes(searchTerm.toLowerCase()) || t.unitNumber?.toLowerCase().includes(searchTerm.toLowerCase()))
+      ((t.name || '').toLowerCase().includes(searchTerm.toLowerCase()) || (t.unitNumber || '').toLowerCase().includes(searchTerm.toLowerCase()))
     );
   }, [tenants, searchTerm]);
 
   const movedOutTenants = useMemo(() => {
     return tenants.filter((t: any) => 
       t.status === 'INACTIVE' && 
-      t.name.toLowerCase().includes(searchTerm.toLowerCase())
+      (t.name || '').toLowerCase().includes(searchTerm.toLowerCase())
     );
   }, [tenants, searchTerm]);
 
@@ -664,7 +680,6 @@ function TenantsTab({ tenants, onRefresh }: any) {
 }
 
 function ExpensesTab({ expenses, requests, waterReadings, onRefresh }: any) {
-  const communalReadings = waterReadings.filter((r: any) => r.type === 'COMMUNAL');
   const tenantReadings = waterReadings.filter((r: any) => r.type === 'TENANT');
   const [selectedCommission, setSelectedCommission] = useState<any>(null);
 
@@ -738,40 +753,7 @@ function ExpensesTab({ expenses, requests, waterReadings, onRefresh }: any) {
           </div>
         </section>
 
-        <section className="space-y-6">
-          <h3 className="text-xl font-bold flex items-center gap-2">
-            <Droplets className="h-5 w-5 text-cyan-500" /> Communal Water Logs
-          </h3>
-          <div className="bg-zinc-900 border border-zinc-900 rounded-xl overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse min-w-[600px]">
-                <thead>
-                  <tr className="bg-zinc-900/80 text-zinc-500 text-[10px] uppercase tracking-widest font-bold">
-                    <th className="px-6 py-4">Period</th>
-                    <th className="px-6 py-4">Readings (Prev → Pres)</th>
-                    <th className="px-6 py-4">Consumption</th>
-                    <th className="px-6 py-4 text-right">Cost</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-zinc-900">
-                  {communalReadings.map((r: any) => (
-                    <tr key={r.id} className="hover:bg-zinc-900/30 transition-all">
-                      <td className="px-6 py-4 font-medium text-zinc-400">{format(new Date(r.createdAt), 'MMMM yyyy')}</td>
-                      <td className="px-6 py-4 font-mono text-xs text-zinc-500">{r.previousReading} → {r.presentReading}</td>
-                      <td className="px-6 py-4 text-zinc-300">{r.consumption} units</td>
-                      <td className="px-6 py-4 text-right font-bold text-cyan-400/80 font-mono">KSH {r.amount.toLocaleString()}</td>
-                    </tr>
-                  ))}
-                  {communalReadings.length === 0 && (
-                    <tr>
-                      <td colSpan={4} className="px-6 py-10 text-center text-zinc-600 text-sm">No special water logs found.</td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </section>
+
       </div>
 
       <div className="space-y-12 shrink-0 lg:w-80">
@@ -827,6 +809,49 @@ function ExpensesTab({ expenses, requests, waterReadings, onRefresh }: any) {
 function ReportsTab({ payments, expenses, tenants, serviceRequests, units, onRefresh }: any) {
   const [processingId, setProcessingId] = useState<string | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
+
+  const [searchTerm, setSearchTerm] = useState('');
+  const [paymentTypeFilter, setPaymentTypeFilter] = useState('ALL');
+  const [reportMonth, setReportMonth] = useState(format(new Date(), 'yyyy-MM'));
+
+  const filteredPayments = useMemo(() => {
+    return payments.filter((p: any) => {
+      const tenant = tenants.find((t: any) => t.id === p.tenantId);
+      const tenantName = (tenant?.name || '').toLowerCase();
+      const unitNumber = (tenant?.unitNumber || '').toLowerCase();
+      const refCode = (p.referenceCode || '').toLowerCase();
+      const searchMatch = !searchTerm || tenantName.includes(searchTerm.toLowerCase()) || 
+                          unitNumber.includes(searchTerm.toLowerCase()) || 
+                          refCode.includes(searchTerm.toLowerCase());
+      
+      const typeMatch = paymentTypeFilter === 'ALL' || p.paymentType === paymentTypeFilter;
+      
+      let dateMatch = true;
+      if (reportMonth) {
+        const itemMonth = format(new Date(p.createdAt), 'yyyy-MM');
+        dateMatch = itemMonth === reportMonth;
+      }
+
+      return searchMatch && typeMatch && dateMatch;
+    });
+  }, [payments, tenants, searchTerm, paymentTypeFilter, reportMonth]);
+
+  const filteredExpenses = useMemo(() => {
+    return expenses.filter((e: any) => {
+      const unitNumber = (e.unitNumber || '').toLowerCase();
+      const searchMatch = !searchTerm || unitNumber.includes(searchTerm.toLowerCase()) || 
+                          (e.description || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+                          (e.type || '').toLowerCase().includes(searchTerm.toLowerCase());
+      
+      let dateMatch = true;
+      if (reportMonth) {
+        const itemMonth = format(new Date(e.createdAt), 'yyyy-MM');
+        dateMatch = itemMonth === reportMonth;
+      }
+
+      return searchMatch && dateMatch;
+    });
+  }, [expenses, searchTerm, reportMonth]);
 
   const onPieEnter = (_: any, index: number) => {
     setActiveIndex(index);
@@ -932,6 +957,7 @@ function ReportsTab({ payments, expenses, tenants, serviceRequests, units, onRef
       await api.users.update(tenant.id, { 
         status: 'INACTIVE', 
         unitNumber: null,
+        unitId: null,
         totalBalance: 0,
         moveOutDate: new Date().toISOString(),
         finalRefundAmount: request.refundAmount,
@@ -939,7 +965,7 @@ function ReportsTab({ payments, expenses, tenants, serviceRequests, units, onRef
       });
 
       // 5. Update Unit to VACANT
-      const unit = units.find(u => u.unitNumber === tenant.unitNumber);
+      const unit = units.find((u: any) => u.id === tenant.unitId || u.unitNumber === tenant.unitNumber);
       if (unit) {
         await api.units.update(unit.id, { 
           status: 'VACANT', 
@@ -955,17 +981,17 @@ function ReportsTab({ payments, expenses, tenants, serviceRequests, units, onRef
     }
   };
   
-  const approvedPayments = payments.filter((p: any) => p.status === 'APPROVED');
+  const approvedPayments = filteredPayments.filter((p: any) => p.status === 'APPROVED');
   const totalRevenue = approvedPayments.reduce((sum: number, p: any) => {
     if (p.paymentType === 'MOVE_IN') {
       return sum + (p.amount / 2);
     }
     return sum + (['DEPOSIT', 'REFUND'].includes(p.paymentType) ? 0 : p.amount);
   }, 0);
-  const totalExpenses = expenses.reduce((sum: number, e: any) => sum + e.amount, 0);
+  const totalExpenses = filteredExpenses.reduce((sum: number, e: any) => sum + e.amount, 0);
   const netProfit = totalRevenue - totalExpenses;
 
-  const revenueByType = [
+  const revenueByTypeRaw = [
     { name: 'Rent', value: approvedPayments.filter((p: any) => p.paymentType === 'RENT' || p.paymentType === 'ALL' || p.paymentType === 'MOVE_IN').reduce((sum: number, p: any) => {
       if (p.paymentType === 'MOVE_IN') return sum + (p.amount / 2);
       return sum + (p.paymentType === 'RENT' || p.paymentType === 'ALL' ? p.amount : 0);
@@ -974,15 +1000,63 @@ function ReportsTab({ payments, expenses, tenants, serviceRequests, units, onRef
     { name: 'Garbage', value: approvedPayments.filter((p: any) => p.paymentType === 'GARBAGE').reduce((sum: number, p: any) => sum + p.amount, 0) },
     { name: 'Deductions', value: approvedPayments.filter((p: any) => p.paymentType === 'REPAIR_DEDUCTION').reduce((sum: number, p: any) => sum + p.amount, 0) },
   ];
+  
+  const revenueByType = revenueByTypeRaw.filter(item => item.value > 0);
 
   return (
     <div className="space-y-8">
       <div className="flex justify-between items-center">
-        <h3 className="text-xl font-bold">Monthly Financial Report - {currentMonth}</h3>
+        <h3 className="text-xl font-bold">Financial Reports</h3>
         <button className="bg-zinc-900 border border-zinc-800 px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 hover:bg-zinc-800 transition-all">
           <Download className="h-4 w-4" /> Export PDF
         </button>
       </div>
+
+      <Card className="p-4 bg-zinc-900 border-zinc-800">
+        <div className="flex flex-col md:flex-row gap-4 items-end">
+          <div className="flex-1 space-y-1">
+            <label className="text-xs font-bold text-zinc-500 uppercase">Search by Tenant, Unit or Ref</label>
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-500" />
+              <input 
+                placeholder="Search..." 
+                value={searchTerm}
+                onChange={e => setSearchTerm(e.target.value)}
+                className="w-full bg-zinc-950 border border-zinc-800 rounded-lg pl-10 pr-4 py-2 text-sm text-zinc-100"
+              />
+            </div>
+          </div>
+          
+          <div className="w-full md:w-48 space-y-1">
+            <label className="text-xs font-bold text-zinc-500 uppercase">Type Filter</label>
+            <select 
+              value={paymentTypeFilter}
+              onChange={e => setPaymentTypeFilter(e.target.value)}
+              className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm text-zinc-100"
+            >
+              <option value="ALL">All Types</option>
+              <option value="RENT">Rent</option>
+              <option value="DEPOSIT">Deposit</option>
+              <option value="WATER">Water</option>
+              <option value="GARBAGE">Garbage</option>
+              <option value="MOVE_IN">Move In (Total)</option>
+              <option value="REFUND">Refund</option>
+              <option value="REPAIR_DEDUCTION">Repair Deduction</option>
+              <option value="MPESA">M-PESA / General</option>
+            </select>
+          </div>
+
+          <div className="w-full md:w-48 space-y-1">
+            <label className="text-xs font-bold text-zinc-500 uppercase">Report Month</label>
+            <input 
+              type="month"
+              value={reportMonth}
+              onChange={e => setReportMonth(e.target.value)}
+              className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm text-zinc-100 placeholder-zinc-700 [color-scheme:dark]" 
+            />
+          </div>
+        </div>
+      </Card>
 
       <div className="grid gap-6 md:grid-cols-3">
         <Card className="p-6 bg-emerald-500/10 border-emerald-500/20">
@@ -1003,40 +1077,48 @@ function ReportsTab({ payments, expenses, tenants, serviceRequests, units, onRef
         <Card className="p-6 overflow-visible flex flex-col">
           <h4 className="text-sm font-bold text-zinc-500 uppercase mb-6">Revenue Breakdown</h4>
           <div className="h-72 w-full relative min-h-[288px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie
-                  activeIndex={activeIndex}
-                  activeShape={renderActiveShape}
-                  data={revenueByType}
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={60}
-                  outerRadius={80}
-                  dataKey="value"
-                  onMouseEnter={onPieEnter}
-                  stroke="none"
-                >
-                  {revenueByType.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip 
-                  contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
-                  itemStyle={{ fontSize: '12px' }}
-                />
-              </PieChart>
-            </ResponsiveContainer>
-          </div>
-          <div className="mt-4 grid grid-cols-2 gap-2">
-            {revenueByType.map((item, index) => (
-              <div key={item.name} className="flex items-center gap-2">
-                <div className="w-2 h-2 rounded-full" style={{ backgroundColor: COLORS[index % COLORS.length] }} />
-                <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-tighter">{item.name}</span>
-                <span className="text-[10px] text-zinc-500 ml-auto">KSH {item.value.toLocaleString()}</span>
+            {revenueByType.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    activeIndex={activeIndex}
+                    activeShape={renderActiveShape}
+                    data={revenueByType}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={60}
+                    outerRadius={80}
+                    dataKey="value"
+                    onMouseEnter={onPieEnter}
+                    stroke="none"
+                  >
+                    {revenueByType.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip 
+                    contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }}
+                    itemStyle={{ fontSize: '12px' }}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="absolute inset-0 flex items-center justify-center text-sm text-zinc-500">
+                No revenue data for this month
               </div>
-            ))}
+            )}
           </div>
+          {revenueByType.length > 0 && (
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              {revenueByType.map((item, index) => (
+                <div key={item.name} className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full" style={{ backgroundColor: COLORS[index % COLORS.length] }} />
+                  <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-tighter">{item.name}</span>
+                  <span className="text-[10px] text-zinc-500 ml-auto">KSH {item.value.toLocaleString()}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </Card>
 
         <Card className="p-6 flex flex-col">
@@ -1045,12 +1127,12 @@ function ReportsTab({ payments, expenses, tenants, serviceRequests, units, onRef
             <ResponsiveContainer width="100%" height="100%">
               <BarChart 
                 data={[
-                  { name: 'Cleaning', value: expenses.filter((e: any) => e.type === 'CLEANING').reduce((sum: number, e: any) => sum + e.amount, 0), color: '#3b82f6' },
-                  { name: 'Electricity', value: expenses.filter((e: any) => e.type === 'ELECTRICITY').reduce((sum: number, e: any) => sum + e.amount, 0), color: '#eab308' },
-                  { name: 'Water', value: expenses.filter((e: any) => e.type === 'WATER').reduce((sum: number, e: any) => sum + e.amount, 0), color: '#06b6d4' },
-                  { name: 'Maintenance', value: expenses.filter((e: any) => e.type === 'MAINTENANCE').reduce((sum: number, e: any) => sum + e.amount, 0), color: '#f97316' },
-                  { name: 'Commission', value: expenses.filter((e: any) => e.type === 'COMMISSION').reduce((sum: number, e: any) => sum + e.amount, 0), color: '#10b981' },
-                  { name: 'Other', value: expenses.filter((e: any) => e.type === 'OTHER').reduce((sum: number, e: any) => sum + e.amount, 0), color: '#a855f7' },
+                  { name: 'Cleaning', value: filteredExpenses.filter((e: any) => e.type === 'CLEANING').reduce((sum: number, e: any) => sum + e.amount, 0), color: '#3b82f6' },
+                  { name: 'Electricity', value: filteredExpenses.filter((e: any) => e.type === 'ELECTRICITY').reduce((sum: number, e: any) => sum + e.amount, 0), color: '#eab308' },
+                  { name: 'Water', value: filteredExpenses.filter((e: any) => e.type === 'WATER').reduce((sum: number, e: any) => sum + e.amount, 0), color: '#06b6d4' },
+                  { name: 'Maintenance', value: filteredExpenses.filter((e: any) => e.type === 'MAINTENANCE').reduce((sum: number, e: any) => sum + e.amount, 0), color: '#f97316' },
+                  { name: 'Commission', value: filteredExpenses.filter((e: any) => e.type === 'COMMISSION').reduce((sum: number, e: any) => sum + e.amount, 0), color: '#10b981' },
+                  { name: 'Other', value: filteredExpenses.filter((e: any) => e.type === 'OTHER').reduce((sum: number, e: any) => sum + e.amount, 0), color: '#a855f7' },
                 ]}
                 layout="vertical"
                 margin={{ top: 0, right: 30, left: 60, bottom: 0 }}
@@ -1282,10 +1364,320 @@ function RegisterAgentModal({ onClose, onRefresh }: any) {
   );
 }
 
+function RecordsTab({ units, tenants, onRefresh }: any) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [defaultMonth, setDefaultMonth] = useState(format(new Date(), 'yyyy-MM'));
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+
+  const parseNumber = (val: string) => {
+    if (!val) return 0;
+    return parseFloat(val.toString().replace(/,/g, '')) || 0;
+  };
+
+  const parsePaymentString = (val: string) => {
+    if (!val || val === 'n/p') return 0;
+    const parts = val.toString().split('+');
+    return parts.reduce((sum, p) => sum + parseNumber(p), 0);
+  };
+
+  const parseDateStr = (dateStr: string, fallbackMonth: string) => {
+    if (!dateStr) {
+      if (fallbackMonth) {
+        return new Date(`${fallbackMonth}-01`).toISOString();
+      }
+      return new Date().toISOString();
+    }
+    const parts = dateStr.includes('/') ? dateStr.split('/') : dateStr.split('-');
+    if (parts.length === 3) {
+       let day, month, year;
+       if (dateStr.includes('/')) {
+         // Assuming DD/MM/YYYY from CSV
+         day = parseInt(parts[0], 10);
+         month = parseInt(parts[1], 10) - 1;
+         year = parseInt(parts[2], 10);
+       } else {
+         // YYYY-MM-DD
+         year = parseInt(parts[0], 10);
+         month = parseInt(parts[1], 10) - 1;
+         day = parseInt(parts[2], 10);
+       }
+       if (year < 100) year += 2000;
+       const d = new Date(year, month, day);
+       if (!isNaN(d.getTime())) return d.toISOString();
+    }
+    return new Date(dateStr).toISOString();
+  };
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setLoading(true);
+    setError('');
+    setSuccess('');
+
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: async (results) => {
+        try {
+          const rows = results.data as any[];
+          let processed = 0;
+          let currentTenants = [...tenants];
+          let currentUnits = [...units];
+
+          for (const rawRow of rows) {
+            const row: any = {};
+            for (const key in rawRow) {
+              row[key.toLowerCase().trim()] = typeof rawRow[key] === 'string' ? rawRow[key].trim().toLowerCase() : rawRow[key];
+            }
+
+            const unitNumber = row['unitnumber'] || row['unit no.'] || row['unit no'] || row['unit'];
+            const nameObj = rawRow['name'] || rawRow['Tenant Name'] || row['tenant name'] || row['name']; // keep original case for display
+            const name = nameObj ? nameObj.toString().toUpperCase() : ''; 
+            const email = row['email'] || row['email address'];
+            const phone = row['phone'] || row['phone number'];
+            const moveInDate = row['moveindate'] || row['date of occupation'];
+            const rentAmountObj = row['rentamount'] || row['rent amount'] || row['rent'];
+            const depositAmount = row['depositamount'] || row['deposit amount'];
+            const payments = row['pastpaymentsamount'] || row['payments made in april 2026'] || row['payments'];
+            const totalBalance = row['totalbalance'] || row['balance at end of april'] || row['balance'];
+            const entryDate = row['pastpaymentdate'] || row['entry date'];
+
+            if (!unitNumber) continue;
+            
+            // Check if unit exists
+            let unit = currentUnits.find((u: any) => (u.unitNumber || '').toLowerCase() === unitNumber.toString().toLowerCase());
+            
+            let rentEst = 10000;
+            if (rentAmountObj) {
+              rentEst = parseNumber(rentAmountObj);
+            } else if (depositAmount) {
+              rentEst = parseNumber(depositAmount);
+            }
+            
+            if (!unit) {
+              // Create unit if not exists
+              const newUnitData = {
+                unitNumber: unitNumber.toString(),
+                type: '1 Bedroom', // Default type
+                rentAmount: rentEst,
+                waterReading: 0,
+                status: 'VACANT',
+                isActive: 1
+              };
+              const createRes = await api.units.create(newUnitData);
+              unit = { ...newUnitData, id: createRes.id };
+              currentUnits.push(unit);
+            } else if (rentAmountObj && parseNumber(rentAmountObj) !== unit.rentAmount) {
+              // Update unit rent amount if provided in CSV
+              await api.units.update(unit.id, { rentAmount: rentEst });
+              unit.rentAmount = rentEst;
+            }
+
+            if (name) {
+              const moveInDateParsed = parseDateStr(moveInDate, defaultMonth);
+              const isMovedIn = new Date(moveInDateParsed) <= new Date();
+              const generatedEmail = email ? email.toString().toLowerCase() : `${name.toString().replace(/\s+/g, '').toLowerCase()}@tenant.com`;
+
+              const tenantData = {
+                name: name.toString(),
+                email: generatedEmail,
+                phone: phone ? phone.toString() : '',
+                role: 'TENANT',
+                unitNumber: unit.unitNumber,
+                unitId: unit.id,
+                rentAmount: unit.rentAmount,
+                totalBalance: parseNumber(totalBalance),
+                depositAmount: parseNumber(depositAmount),
+                waterReading: unit.waterReading || 0,
+                waterBill: 0,
+                garbageFee: 0,
+                isMovedIn: isMovedIn,
+                moveInDate: moveInDateParsed,
+                status: 'ACTIVE'
+              };
+
+              let tenant = currentTenants.find((t: any) => (t.email || '').toLowerCase() === generatedEmail);
+              if (tenant) {
+                await api.users.update(tenant.id, tenantData);
+              } else {
+                tenant = await api.auth.register(tenantData);
+                currentTenants.push(tenant);
+              }
+
+              await api.units.update(unit.id, { 
+                status: 'OCCUPIED',
+                currentTenantId: tenant.id
+              });
+              
+              const paymentAmount = parsePaymentString(payments);
+              if (paymentAmount > 0) {
+                await api.payments.create({
+                  tenantId: tenant.id,
+                  amount: paymentAmount,
+                  paymentType: 'MPESA',
+                  referenceCode: `IMPORTED_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+                  status: 'APPROVED',
+                  notes: `Imported past payment for ${defaultMonth}`,
+                  createdAt: parseDateStr(entryDate, defaultMonth)
+                });
+              }
+            }
+            processed++;
+          }
+          setSuccess(`Successfully imported and processed ${processed} records.`);
+          onRefresh();
+        } catch (err: any) {
+          console.error(err);
+          setError(err.message || 'Failed to process CSV file');
+        } finally {
+          setLoading(false);
+        }
+      },
+      error: (error) => {
+        console.error(error);
+        setError(error.message);
+        setLoading(false);
+      }
+    });
+  };
+
+  const downloadTemplate = () => {
+    const template = 'name,email,phone,unitNumber,rentAmount,depositAmount,totalBalance,moveInDate,pastPaymentsAmount,pastPaymentDate\nLUCY JUDE,namujude@gmail.com,725441751,SHOP,16000,30000,0,01/12/2024,16000,12/04/2026';
+    const blob = new Blob([template], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'system_initialization_template.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex justify-between items-center">
+        <div>
+          <h3 className="text-xl font-bold">System Initialization & Records</h3>
+          <p className="text-sm text-zinc-500">Upload bulk records to create units and tenants simultaneously.</p>
+        </div>
+      </div>
+      
+      <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-8 w-full max-w-2xl space-y-6">
+        <div className="space-y-4">
+          <div className="p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-lg text-sm text-emerald-400">
+            <p className="font-semibold mb-1">How it works:</p>
+            <ul className="list-disc pl-4 space-y-1 text-xs text-emerald-500/80">
+              <li>If a <strong>Unit no.</strong> doesn't exist, it will be automatically created.</li>
+              <li>If a <strong>Tenant Name</strong> is provided, they will be assigned.</li>
+              <li>Past payments are automatically parsed.</li>
+              <li>Dates in the CSV like <strong>DD/MM/YYYY</strong> are supported.</li>
+            </ul>
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-sm font-bold text-zinc-400 uppercase block">Default Month / Context</label>
+            <input 
+              type="month" 
+              value={defaultMonth}
+              onChange={(e) => setDefaultMonth(e.target.value)}
+              className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-3 focus:outline-none focus:ring-1 focus:ring-zinc-700" 
+            />
+            <p className="text-xs text-zinc-500">This month is used if specific payment dates are missing from the CSV.</p>
+          </div>
+
+          <button 
+            type="button"
+            onClick={downloadTemplate}
+            className="w-full bg-zinc-800 text-zinc-300 border border-zinc-700 py-3 rounded-lg text-sm font-semibold hover:bg-zinc-700 transition-colors flex items-center justify-center gap-2"
+          >
+            <Download className="h-4 w-4" /> Download Example CSV Template
+          </button>
+
+          {error && <div className="p-3 bg-red-500/10 text-red-500 rounded border border-red-500/20 text-sm font-semibold">{error}</div>}
+          {success && <div className="p-3 bg-emerald-500/10 text-emerald-500 rounded border border-emerald-500/20 text-sm font-semibold">{success}</div>}
+
+          <div className="space-y-2 mt-8">
+            <label className="text-sm font-bold text-zinc-400 uppercase block">Upload CSV File</label>
+            <label className="flex flex-col items-center justify-center w-full h-40 px-4 transition bg-zinc-950 border-2 border-zinc-800 border-dashed rounded-xl appearance-none cursor-pointer hover:border-zinc-600 focus:outline-none">
+              <span className="flex flex-col items-center space-y-2">
+                <Database className="w-8 h-8 text-zinc-600" />
+                <span className="font-medium text-zinc-500">
+                  {loading ? 'Processing initialization...' : 'Click to Browse or Drag & Drop'}
+                </span>
+                <span className="text-xs text-zinc-600">.csv files only</span>
+              </span>
+              <input type="file" accept=".csv" className="hidden" disabled={loading} onChange={handleFileUpload} />
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-red-950/10 border border-red-900/50 rounded-xl p-8 w-full max-w-2xl space-y-6 mt-8">
+        <div className="space-y-4">
+          <div>
+            <h4 className="text-lg font-bold text-red-500 flex items-center gap-2">
+              <AlertCircle className="w-5 h-5" /> Danger Zone
+            </h4>
+            <p className="text-sm text-zinc-400 mt-1">
+              Resetting the system will permanently delete all units, tenants, payments, service requests, expenses, and logs. This action cannot be undone. Only your landlord account will remain.
+            </p>
+          </div>
+          {!showResetConfirm ? (
+            <button
+              onClick={() => setShowResetConfirm(true)}
+              disabled={loading}
+              className="w-full sm:w-auto bg-red-500/10 text-red-500 border border-red-500/50 px-6 py-3 rounded-lg text-sm font-semibold hover:bg-red-500/20 transition-colors flex items-center justify-center gap-2"
+            >
+              <Trash2 className="w-4 h-4" /> Reset Entire System
+            </button>
+          ) : (
+            <div className="space-y-4 p-4 rounded-lg border border-red-500/30 bg-red-500/5">
+              <p className="text-sm font-bold text-red-500">Are you ABSOLUTELY sure? ALL data will be lost!</p>
+              <div className="flex gap-4">
+                <button
+                  onClick={async () => {
+                    setLoading(true);
+                    try {
+                      await api.admin.resetSystem();
+                      setSuccess("System successfully reset.");
+                      setShowResetConfirm(false);
+                      setTimeout(() => window.location.reload(), 1500);
+                    } catch (e: any) {
+                      setError(e.message || "Failed to reset system");
+                      setLoading(false);
+                    }
+                  }}
+                  disabled={loading}
+                  className="bg-red-500 hover:bg-red-600 text-white px-6 py-2 rounded-lg text-sm font-bold flex items-center gap-2"
+                >
+                  {loading ? 'Resetting...' : 'Yes, Delete Everything'}
+                </button>
+                <button
+                  onClick={() => setShowResetConfirm(false)}
+                  disabled={loading}
+                  className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-4 py-2 rounded-lg text-sm font-semibold"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AddUnitModal({ onClose, onRefresh }: any) {
   const [unitNumber, setUnitNumber] = useState('');
   const [rentAmount, setRentAmount] = useState('');
   const [waterReading, setWaterReading] = useState('');
+  const [type, setType] = useState('1 Bedroom');
   const [loading, setLoading] = useState(false);
 
   const submit = async (e: any) => {
@@ -1294,6 +1686,7 @@ function AddUnitModal({ onClose, onRefresh }: any) {
     try {
       await api.units.create({
         unitNumber,
+        type,
         rentAmount: parseFloat(rentAmount),
         waterReading: parseFloat(waterReading) || 0,
         status: 'VACANT'
@@ -1315,6 +1708,15 @@ function AddUnitModal({ onClose, onRefresh }: any) {
           <div className="space-y-2">
             <label className="text-xs font-bold text-zinc-500 uppercase">Unit Number</label>
             <input required value={unitNumber} onChange={e => setUnitNumber(e.target.value)} className="w-full bg-zinc-800 border-none rounded-lg px-4 py-2 text-sm" placeholder="e.g. A101" />
+          </div>
+          <div className="space-y-2">
+            <label className="text-xs font-bold text-zinc-500 uppercase">Unit Type</label>
+            <select value={type} onChange={e => setType(e.target.value)} className="w-full bg-zinc-800 border-none rounded-lg px-4 py-2 text-sm text-zinc-100">
+              <option value="Shop">Shop</option>
+              <option value="1 Bedroom">1 Bedroom</option>
+              <option value="2 Bedroom">2 Bedroom</option>
+              <option value="Bedsitter">Bedsitter</option>
+            </select>
           </div>
           <div className="space-y-2">
             <label className="text-xs font-bold text-zinc-500 uppercase">Monthly Rent (KSH)</label>
@@ -1339,6 +1741,8 @@ function AddUnitModal({ onClose, onRefresh }: any) {
 function EditUnitModal({ unit, onClose, onRefresh }: any) {
   const [unitNumber, setUnitNumber] = useState(unit.unitNumber);
   const [rentAmount, setRentAmount] = useState(unit.rentAmount.toString());
+  const [type, setType] = useState(unit.type || '1 Bedroom');
+  const [isActive, setIsActive] = useState(unit.isActive !== 0);
   const [loading, setLoading] = useState(false);
 
   const submit = async (e: any) => {
@@ -1347,7 +1751,9 @@ function EditUnitModal({ unit, onClose, onRefresh }: any) {
     try {
       await api.units.update(unit.id, {
         unitNumber,
+        type,
         rentAmount: parseFloat(rentAmount),
+        isActive: isActive ? 1 : 0
       });
       onRefresh();
       onClose();
@@ -1368,9 +1774,27 @@ function EditUnitModal({ unit, onClose, onRefresh }: any) {
             <input required value={unitNumber} onChange={e => setUnitNumber(e.target.value)} className="w-full bg-zinc-800 border-none rounded-lg px-4 py-2 text-sm" />
           </div>
           <div className="space-y-2">
+            <label className="text-xs font-bold text-zinc-500 uppercase">Unit Type</label>
+            <select value={type} onChange={e => setType(e.target.value)} className="w-full bg-zinc-800 border-none rounded-lg px-4 py-2 text-sm text-zinc-100">
+              <option value="Shop">Shop</option>
+              <option value="1 Bedroom">1 Bedroom</option>
+              <option value="2 Bedroom">2 Bedroom</option>
+              <option value="Bedsitter">Bedsitter</option>
+            </select>
+          </div>
+          <div className="space-y-2">
             <label className="text-xs font-bold text-zinc-500 uppercase">Monthly Rent (KSH)</label>
             <input required type="number" value={rentAmount} onChange={e => setRentAmount(e.target.value)} className="w-full bg-zinc-800 border-none rounded-lg px-4 py-2 text-sm" />
           </div>
+          <label className="flex items-center gap-2 mt-4">
+            <input 
+              type="checkbox" 
+              checked={isActive}
+              onChange={e => setIsActive(e.target.checked)}
+              className="rounded bg-zinc-800 border-zinc-700 text-emerald-500 focus:ring-emerald-500"
+            />
+            <span className="text-sm">Unit is Active</span>
+          </label>
           <div className="flex gap-3 pt-4">
             <button type="button" onClick={onClose} className="flex-1 py-2 text-sm font-semibold text-zinc-500 hover:text-zinc-300">Cancel</button>
             <button type="submit" disabled={loading} className="flex-1 bg-zinc-100 text-zinc-950 py-2 rounded-lg text-sm font-bold">
@@ -1384,7 +1808,7 @@ function EditUnitModal({ unit, onClose, onRefresh }: any) {
 }
 
 function UnitDetailsModal({ unit, tenants, payments, onClose }: any) {
-  const unitTenant = tenants.find((t: any) => t.unitNumber === unit.unitNumber);
+  const unitTenant = tenants.find((t: any) => t.unitId === unit.id || t.unitNumber === unit.unitNumber);
   const unitPayments = payments.filter((p: any) => p.tenantId === unitTenant?.id);
 
   return (
@@ -1837,6 +2261,172 @@ function generateChartData(payments: any[], expenses: any[]) {
   return last6Months;
 }
 
+function PaymentsTab({ payments, tenants, units }: any) {
+  const [searchTerm, setSearchTerm] = useState('');
+  const [paymentTypeFilter, setPaymentTypeFilter] = useState('ALL');
+  const [dateRange, setDateRange] = useState({ start: '', end: '' });
+
+  const filteredPayments = useMemo(() => {
+    return payments.filter((p: any) => {
+      const tenant = tenants.find((t: any) => t.id === p.tenantId);
+      const tenantName = (tenant?.name || '').toLowerCase();
+      const unitNumber = (tenant?.unitNumber || '').toLowerCase();
+      const refCode = (p.referenceCode || '').toLowerCase();
+      const searchMatch = tenantName.includes(searchTerm.toLowerCase()) || 
+                          unitNumber.includes(searchTerm.toLowerCase()) || 
+                          refCode.includes(searchTerm.toLowerCase());
+      
+      const typeMatch = paymentTypeFilter === 'ALL' || p.paymentType === paymentTypeFilter;
+      
+      let dateMatch = true;
+      if (dateRange.start) {
+        dateMatch = dateMatch && new Date(p.createdAt) >= new Date(dateRange.start);
+      }
+      if (dateRange.end) {
+        const endDate = new Date(dateRange.end);
+        endDate.setDate(endDate.getDate() + 1);
+        dateMatch = dateMatch && new Date(p.createdAt) < endDate;
+      }
+
+      return searchMatch && typeMatch && dateMatch;
+    }).sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }, [payments, tenants, searchTerm, paymentTypeFilter, dateRange]);
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+        <div>
+          <h2 className="text-2xl font-bold tracking-tight">Payments</h2>
+          <p className="text-sm text-zinc-500">View and filter all transaction records</p>
+        </div>
+      </div>
+
+      <Card className="p-4 bg-zinc-900 border-zinc-800">
+        <div className="flex flex-col md:flex-row gap-4 items-end">
+          <div className="flex-1 space-y-1">
+            <label className="text-xs font-bold text-zinc-500 uppercase">Search by Tenant, Unit or Ref</label>
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-500" />
+              <input 
+                placeholder="Search..." 
+                value={searchTerm}
+                onChange={e => setSearchTerm(e.target.value)}
+                className="w-full bg-zinc-950 border border-zinc-800 rounded-lg pl-10 pr-4 py-2 text-sm text-zinc-100"
+              />
+            </div>
+          </div>
+          
+          <div className="w-full md:w-48 space-y-1">
+            <label className="text-xs font-bold text-zinc-500 uppercase">Payment Type</label>
+            <select 
+              value={paymentTypeFilter}
+              onChange={e => setPaymentTypeFilter(e.target.value)}
+              className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm text-zinc-100"
+            >
+              <option value="ALL">All Types</option>
+              <option value="RENT">Rent</option>
+              <option value="ALL">Rent & Deposit</option>
+              <option value="DEPOSIT">Deposit</option>
+              <option value="WATER">Water</option>
+              <option value="GARBAGE">Garbage</option>
+              <option value="MOVE_IN">Move In (Total)</option>
+              <option value="REFUND">Refund</option>
+              <option value="REPAIR_DEDUCTION">Repair Deduction</option>
+              <option value="MPESA">M-PESA / General</option>
+            </select>
+          </div>
+
+          <div className="w-full md:w-36 space-y-1">
+            <label className="text-xs font-bold text-zinc-500 uppercase">Start Date</label>
+            <input 
+              type="date"
+              value={dateRange.start}
+              onChange={e => setDateRange({...dateRange, start: e.target.value})}
+              className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm text-zinc-100 placeholder-zinc-700 [color-scheme:dark]" 
+            />
+          </div>
+
+          <div className="w-full md:w-36 space-y-1">
+            <label className="text-xs font-bold text-zinc-500 uppercase">End Date</label>
+            <input 
+              type="date"
+              value={dateRange.end}
+              onChange={e => setDateRange({...dateRange, end: e.target.value})}
+              className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm text-zinc-100 placeholder-zinc-700 [color-scheme:dark]" 
+            />
+          </div>
+        </div>
+      </Card>
+
+      <Card className="overflow-hidden border-zinc-800">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left">
+            <thead className="bg-zinc-900 border-b border-zinc-800">
+              <tr>
+                <th className="px-6 py-4 text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Date</th>
+                <th className="px-6 py-4 text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Tenant</th>
+                <th className="px-6 py-4 text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Type</th>
+                <th className="px-6 py-4 text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Ref Code</th>
+                <th className="px-6 py-4 text-[10px] font-bold text-zinc-500 uppercase tracking-widest text-right">Amount</th>
+                <th className="px-6 py-4 text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-zinc-800/50">
+              {filteredPayments.map((payment: any) => {
+                const tenant = tenants.find((t: any) => t.id === payment.tenantId);
+                return (
+                  <tr key={payment.id} className="hover:bg-zinc-900/50 transition-colors">
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-zinc-300">
+                      {format(new Date(payment.createdAt), 'MMM dd, yyyy HH:mm')}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      {tenant ? (
+                        <div>
+                          <div className="text-sm font-medium text-white">{tenant.name}</div>
+                          <div className="text-xs text-zinc-500">Unit: {tenant.unitNumber || 'N/A'}</div>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-zinc-500 italic">Unknown Tenant</span>
+                      )}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold tracking-widest bg-zinc-800 text-zinc-300">
+                        {payment.paymentType.replace('_', ' ')}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap font-mono text-xs text-zinc-400">
+                      {payment.referenceCode || 'N/A'}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-emerald-400 text-right">
+                      Kes {payment.amount.toLocaleString()}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold tracking-widest ${
+                        payment.status === 'APPROVED' ? 'bg-emerald-500/10 text-emerald-500' :
+                        payment.status === 'REJECTED' ? 'bg-red-500/10 text-red-500' :
+                        'bg-amber-500/10 text-amber-500'
+                      }`}>
+                        {payment.status}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+              {filteredPayments.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="px-6 py-12 text-center text-zinc-500 text-sm">
+                    No payments found matching the filters.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
 function InvoicesTab({ tenants, onRefresh }: any) {
   const [invoices, setInvoices] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1879,8 +2469,8 @@ function InvoicesTab({ tenants, onRefresh }: any) {
 
   const filteredInvoices = useMemo(() => {
     return invoices.filter((i: any) => 
-      i.tenantName.toLowerCase().includes(searchTerm.toLowerCase()) || 
-      i.unitNumber.toLowerCase().includes(searchTerm.toLowerCase())
+      (i.tenantName || '').toLowerCase().includes(searchTerm.toLowerCase()) || 
+      (i.unitNumber || '').toLowerCase().includes(searchTerm.toLowerCase())
     );
   }, [invoices, searchTerm]);
 

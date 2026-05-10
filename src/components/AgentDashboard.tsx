@@ -402,14 +402,14 @@ function TenantsTab({ tenants, units, onRefresh }: any) {
   const activeTenants = useMemo(() => {
     return tenants.filter((t: any) => 
       t.status === 'ACTIVE' && 
-      (t.name.toLowerCase().includes(searchTerm.toLowerCase()) || t.unitNumber?.toLowerCase().includes(searchTerm.toLowerCase()))
+      ((t.name || '').toLowerCase().includes(searchTerm.toLowerCase()) || (t.unitNumber || '').toLowerCase().includes(searchTerm.toLowerCase()))
     );
   }, [tenants, searchTerm]);
 
   const movedOutTenants = useMemo(() => {
     return tenants.filter((t: any) => 
       t.status === 'INACTIVE' && 
-      t.name.toLowerCase().includes(searchTerm.toLowerCase())
+      (t.name || '').toLowerCase().includes(searchTerm.toLowerCase())
     );
   }, [tenants, searchTerm]);
 
@@ -855,22 +855,13 @@ function MoveOutResolutionModal({ request, tenant, units, onRefresh, onClose }: 
 
 function WaterReadingModal({ target, type, onClose, onRefresh }: any) {
   const [presentReading, setPresentReading] = useState(0);
-  const [previousReading, setPreviousReading] = useState(type === 'TENANT' ? (target?.waterReading || 0) : 0);
+  const [previousReading, setPreviousReading] = useState(target?.waterReading || 0);
   const [loading, setLoading] = useState(false);
   const [config, setConfig] = useState<any>(null);
 
   useEffect(() => {
     api.config.get().then(setConfig);
-    if (type === 'COMMUNAL') {
-      api.waterReadings.list({ type: 'COMMUNAL' }).then(readings => {
-        if (readings && readings.length > 0) {
-          setPreviousReading(readings[0].presentReading);
-          setPresentReading(readings[0].presentReading);
-        }
-      });
-    } else {
-      setPresentReading(target?.waterReading || 0);
-    }
+    setPresentReading(target?.waterReading || 0);
   }, [type, target]);
 
   const rate = config?.waterRate || 100;
@@ -886,9 +877,9 @@ function WaterReadingModal({ target, type, onClose, onRefresh }: any) {
     setLoading(true);
     try {
       await api.waterReadings.create({
-        tenantId: type === 'TENANT' ? target.id : null,
-        unitNumber: type === 'TENANT' ? target.unitNumber : 'COMMUNAL',
-        type,
+        tenantId: target.id,
+        unitNumber: target.unitNumber,
+        type: 'TENANT',
         previousReading,
         presentReading,
         consumption,
@@ -910,18 +901,16 @@ function WaterReadingModal({ target, type, onClose, onRefresh }: any) {
         <div className="flex justify-between items-center">
           <h3 className="text-xl font-bold flex items-center gap-2">
             <Calculator className="h-5 w-5 text-cyan-400" />
-            {type === 'TENANT' ? 'Tenant Reading' : 'Communal Reading'}
+            Tenant Water Reading
           </h3>
           <button onClick={onClose} className="text-zinc-500 hover:text-zinc-100"><X className="h-5 w-5" /></button>
         </div>
 
         <div className="p-4 bg-zinc-950 rounded-lg border border-zinc-800 space-y-2">
-          {type === 'TENANT' && (
-            <div className="flex justify-between text-xs">
-              <span className="text-zinc-500">Tenant</span>
-              <span className="font-bold text-zinc-300">{target?.name} ({target?.unitNumber})</span>
-            </div>
-          )}
+          <div className="flex justify-between text-xs">
+            <span className="text-zinc-500">Tenant</span>
+            <span className="font-bold text-zinc-300">{target?.name} ({target?.unitNumber})</span>
+          </div>
           <div className="flex justify-between text-xs">
             <span className="text-zinc-500">Previous Reading</span>
             <span className="font-mono text-zinc-300">{previousReading}</span>
@@ -976,17 +965,10 @@ function WaterReadingModal({ target, type, onClose, onRefresh }: any) {
 
 function ExpensesTab({ expenses, onRefresh }: any) {
   const [showAdd, setShowAdd] = useState(false);
-  const [showWaterReading, setShowWaterReading] = useState(false);
 
   return (
     <div className="space-y-6">
       <div className="flex justify-end gap-3">
-        <button 
-          onClick={() => setShowWaterReading(true)}
-          className="bg-zinc-900 border border-zinc-800 text-zinc-100 px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 hover:bg-zinc-800 transition-all"
-        >
-          <Droplets className="h-4 w-4 text-cyan-400" /> Communal Water Reading
-        </button>
         <button 
           onClick={() => setShowAdd(true)}
           className="bg-zinc-100 text-zinc-950 px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 hover:bg-zinc-200 transition-all"
@@ -1021,13 +1003,6 @@ function ExpensesTab({ expenses, onRefresh }: any) {
         ))}
       </div>
 
-      {showWaterReading && (
-        <WaterReadingModal 
-          type="COMMUNAL" 
-          onClose={() => setShowWaterReading(false)} 
-          onRefresh={onRefresh} 
-        />
-      )}
       {showAdd && <AddExpenseModal onRefresh={onRefresh} onClose={() => setShowAdd(false)} />}
     </div>
   );
@@ -1096,7 +1071,7 @@ function AddTenantModal({ units, onClose, onRefresh }: any) {
   const [rent, setRent] = useState(0);
   const [loading, setLoading] = useState(false);
 
-  const vacantUnits = units.filter((u: any) => u.status === 'VACANT');
+  const vacantUnits = units.filter((u: any) => u.status === 'VACANT' && u.isActive !== 0);
 
   const handleUnitChange = (unitNo: string) => {
     setUnit(unitNo);
@@ -1113,8 +1088,8 @@ function AddTenantModal({ units, onClose, onRefresh }: any) {
     try {
       const selectedUnit = units.find((u: any) => u.unitNumber === unit);
       const tenantData = {
-        name, email: email.toLowerCase(), phone, role: 'TENANT', unitNumber: unit, rentAmount: rent,
-        totalBalance: rent * 2, // 1 month rent + 1 month deposit
+        name, email: email.toLowerCase(), phone, role: 'TENANT', unitNumber: unit, unitId: selectedUnit?.id, rentAmount: rent,
+        totalBalance: rent * (selectedUnit?.type === 'Shop' ? 3 : 2), // 1 month rent + deposit (2 months for shop)
         waterReading: selectedUnit?.waterReading || 0, waterBill: 0, garbageFee: 0,
         depositAmount: 0,
         isMovedIn: false,

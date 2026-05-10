@@ -83,5 +83,6 @@ export const api = {
   },
   admin: {
     auditLogs: (limit = 100, offset = 0) => request(`/admin/audit-logs?limit=${limit}&offset=${offset}`),
+    resetSystem: () => request('/admin/reset', { method: 'POST' }),
   },
 };

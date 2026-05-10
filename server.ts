@@ -110,7 +110,7 @@ async function startServer() {
   });
 
   app.post("/api/auth/register", async (req: any, res) => {
-    const { name, email, role, unitNumber, rentAmount, garbageFee, phone, password, totalBalance, waterReading } = req.body;
+    const { name, email, role, unitNumber, unitId, rentAmount, garbageFee, phone, password, totalBalance, waterReading, depositAmount, moveInDate } = req.body;
     
     // Check if any landlord exists
     const landlord = await db.prepare("SELECT id FROM users WHERE role = 'LANDLORD'").get();
@@ -122,12 +122,15 @@ async function startServer() {
 
     const id = crypto.randomUUID();
     const hash = password ? bcrypt.hashSync(password, 10) : bcrypt.hashSync(Math.random().toString(36), 10);
+    const parsedMoveInDate = moveInDate || new Date().toISOString();
+    const isMovedIn = req.body.isMovedIn !== undefined ? req.body.isMovedIn : new Date(parsedMoveInDate) <= new Date();
     
     try {
       await db.prepare(`
-        INSERT INTO users (id, name, email, "passwordHash", role, "unitNumber", "rentAmount", "garbageFee", phone, "registeredBy", "totalBalance", "waterReading")
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(id, name, email, hash, role || 'TENANT', unitNumber || null, rentAmount || 0, garbageFee || 0, phone || null, req.user?.id || id, totalBalance || 0, waterReading || 0);
+        INSERT INTO users (id, name, email, "passwordHash", role, "unitNumber", "unitId", "rentAmount", "garbageFee", phone, "registeredBy", "totalBalance", "waterReading", "depositAmount", "moveInDate", "isMovedIn")
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(id, name, email, hash, role || 'TENANT', unitNumber || null, unitId || null, rentAmount || 0, garbageFee || 0, phone || null, req.user?.id || id, totalBalance || 0, waterReading || 0, depositAmount || 0, parsedMoveInDate, isMovedIn);
+
       
       await auditService.log({
         userId: req.user?.id || id,
@@ -139,7 +142,7 @@ async function startServer() {
         ipAddress: req.ip
       });
 
-      const newUser = { id, name, email, role };
+      const newUser = { id, name, email, role, unitNumber, unitId, rentAmount, garbageFee, phone, totalBalance, waterReading, depositAmount, moveInDate, isMovedIn, status: 'ACTIVE' };
       if (!landlord) {
         // Log in the first landlord immediately
         const token = jwt.sign(newUser, JWT_SECRET, { expiresIn: "1d" });
@@ -219,12 +222,13 @@ async function startServer() {
 
   app.post("/api/payments", requireAuth, async (req: any, res) => {
     try {
-      const { amount, paymentType, referenceCode, status, tenantId, notes } = req.body;
+      const { amount, paymentType, referenceCode, status, tenantId, notes, createdAt } = req.body;
       const id = crypto.randomUUID();
       const tId = req.user.role === 'TENANT' ? req.user.id : tenantId;
       
-      await db.prepare('INSERT INTO payments (id, "tenantId", amount, "paymentType", "referenceCode", status, notes) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .run(id, tId, amount, paymentType, referenceCode, status || 'PENDING', notes);
+      const insertDate = createdAt ? new Date(createdAt).toISOString() : new Date().toISOString();
+      await db.prepare('INSERT INTO payments (id, "tenantId", amount, "paymentType", "referenceCode", status, notes, "createdAt") VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(id, tId, amount, paymentType, referenceCode, status || 'PENDING', notes, insertDate);
       
       await auditService.log({
         userId: req.user.id,
@@ -603,6 +607,37 @@ async function startServer() {
     }
   });
 
+  app.post("/api/admin/reset", requireAuth, isLandlord, async (req: any, res) => {
+    try {
+      await db.transaction(async (client) => {
+        await client.query("DELETE FROM audit_logs");
+        await client.query("DELETE FROM invoice_items");
+        await client.query("DELETE FROM invoices");
+        await client.query("DELETE FROM meter_readings");
+        await client.query("DELETE FROM service_requests");
+        await client.query("DELETE FROM expenses");
+        await client.query("DELETE FROM payments");
+        await client.query("DELETE FROM units");
+        await client.query("DELETE FROM users WHERE role != 'LANDLORD'");
+      });
+      
+      await auditService.log({
+        userId: req.user.id,
+        userEmail: req.user.email,
+        action: 'SYSTEM_RESET',
+        entityType: 'SYSTEM',
+        entityId: 'ALL',
+        details: { status: 'Success' },
+        ipAddress: req.ip
+      });
+
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error("System reset error:", e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   app.get("/api/units", requireAuth, async (req, res) => {
     try {
       const units = await db.prepare("SELECT * FROM units").all();
@@ -614,10 +649,10 @@ async function startServer() {
 
   app.post("/api/units", requireAuth, isLandlord, async (req: any, res) => {
     try {
-      const { unitNumber, rentAmount, waterReading } = req.body;
+      const { unitNumber, rentAmount, waterReading, type } = req.body;
       const id = crypto.randomUUID();
-      await db.prepare('INSERT INTO units (id, "unitNumber", "rentAmount", "waterReading") VALUES (?, ?, ?, ?)')
-        .run(id, unitNumber, rentAmount, waterReading || 0);
+      await db.prepare('INSERT INTO units (id, "unitNumber", "rentAmount", "waterReading", "type") VALUES (?, ?, ?, ?, ?)')
+        .run(id, unitNumber, rentAmount, waterReading || 0, type || '1 Bedroom');
       
       await auditService.log({
         userId: req.user.id,
@@ -625,7 +660,7 @@ async function startServer() {
         action: 'CREATE_UNIT',
         entityType: 'UNIT',
         entityId: id,
-        details: { unitNumber, rentAmount, waterReading },
+        details: { unitNumber, rentAmount, waterReading, type },
         ipAddress: req.ip
       });
 
@@ -644,6 +679,10 @@ async function startServer() {
       
       const setClause = keys.map((k, index) => `"${k}" = $${index + 1}`).join(", ");
       await db.query(`UPDATE units SET ${setClause} WHERE id = $${keys.length + 1}`, [...Object.values(updates), id]);
+      
+      if (updates.unitNumber) {
+        await db.query(`UPDATE users SET "unitNumber" = $1 WHERE "unitId" = $2`, [updates.unitNumber, id]);
+      }
       res.json({ success: true });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -652,7 +691,7 @@ async function startServer() {
 
   app.get("/api/users", requireAuth, isStaff, async (req, res) => {
     try {
-      const users = await db.prepare('SELECT id, name, email, role, phone, "unitNumber", "rentAmount", "garbageFee", "waterReading", "waterBill", "totalBalance", "depositAmount", status, "moveOutStatus", "pendingRepairCosts", "pendingRefundAmount", "finalRefundAmount", "finalRepairCosts", "moveOutDate", "isMovedIn", "isPasswordSet", "registeredBy" FROM users').all();
+      const users = await db.prepare('SELECT id, name, email, role, phone, "unitNumber", "rentAmount", "garbageFee", "waterReading", "waterBill", "totalBalance", "depositAmount", status, "moveOutStatus", "pendingRepairCosts", "pendingRefundAmount", "finalRefundAmount", "finalRepairCosts", "moveOutDate", "moveInDate", "isMovedIn", "isPasswordSet", "registeredBy" FROM users').all();
       res.json(users);
     } catch (e: any) {
       res.status(500).json({ error: e.message });
