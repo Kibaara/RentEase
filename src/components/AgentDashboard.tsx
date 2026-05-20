@@ -29,31 +29,84 @@ export default function AgentDashboard({ onLogout }: any) {
     let total = 0;
     const breakdown: any[] = [];
 
+    tenants.forEach((tenant: any) => {
+      const tenantPayments = payments.filter((p: any) => p.tenantId === tenant.id && p.status === 'APPROVED');
+      const paymentsThisMonth = tenantPayments.filter((p: any) => isWithinInterval(parseISO(p.createdAt), { start, end }));
+      
+      let paidThisMonth = 0;
+      let rawPaymentsThisMonth = 0;
+
+      paymentsThisMonth.forEach((p: any) => {
+        rawPaymentsThisMonth += p.amount;
+        if (p.paymentType === 'RENT') paidThisMonth += p.amount;
+        else if (p.paymentType === 'ALL') {
+          const tWater = tenant.waterBill || 0;
+          const tGarbage = tenant.garbageFee || config?.garbageFee || 0;
+          paidThisMonth += Math.max(0, p.amount - tWater - tGarbage);
+        }
+        else if (p.paymentType === 'MOVE_IN') paidThisMonth += p.amount / 2;
+      });
+
+      const currentBalance = tenant.totalBalance || 0;
+      const estimatedInvoiceAmount = tenant.status === 'ACTIVE' ? ((tenant.rentAmount || 0) + (tenant.waterBill || 0) + (tenant.garbageFee || config?.garbageFee || 0)) : 0;
+      const startBalance = currentBalance - (billingStatus?.isInvoiced ? estimatedInvoiceAmount : 0) + rawPaymentsThisMonth;
+
+      let carryOverCredit = startBalance < 0 ? Math.abs(startBalance) : 0;
+      let pastArrears = startBalance > 0 ? startBalance : 0;
+      let rentDue = tenant.status === 'ACTIVE' ? (tenant.rentAmount || 0) : 0;
+      let rentCollectedThisMonth = 0;
+
+      if (carryOverCredit > 0) {
+        let appliedCredit = Math.min(carryOverCredit, rentDue);
+        rentCollectedThisMonth += appliedCredit;
+        rentDue -= appliedCredit;
+      }
+
+      if (paidThisMonth > 0) {
+        let paymentApplied = Math.min(paidThisMonth, pastArrears + rentDue);
+        rentCollectedThisMonth += paymentApplied;
+      }
+
+      if (rentCollectedThisMonth > 0) {
+        total += rentCollectedThisMonth;
+        breakdown.push({
+          paymentId: paymentsThisMonth.length > 0 ? paymentsThisMonth[0].id : `carry-over-${tenant.id}`,
+          tenantName: tenant.name,
+          unitNumber: tenant.unitNumber,
+          rentPortion: rentCollectedThisMonth,
+          commission: rentCollectedThisMonth * 0.06,
+          date: paymentsThisMonth.length > 0 ? paymentsThisMonth[0].createdAt : new Date().toISOString(),
+          note: paymentsThisMonth.length === 0 ? 'From Overpayment' : undefined
+        });
+      }
+    });
+
+    // Fallback for payments from deleted/unknown tenants
     payments
       .filter((p: any) => p.status === 'APPROVED' && isWithinInterval(parseISO(p.createdAt), { start, end }))
       .forEach((p: any) => {
-        let rentPart = 0;
-        const tenant = tenants.find((t: any) => t.id === p.tenantId);
-        
-        if (p.paymentType === 'RENT') rentPart = p.amount;
-        if (p.paymentType === 'ALL') rentPart = Math.min(tenant?.rentAmount || 0, p.amount);
-        if (p.paymentType === 'MOVE_IN') rentPart = p.amount / 2;
+        if (!tenants.some((t: any) => t.id === p.tenantId)) {
+          let rentPart = 0;
+          if (p.paymentType === 'RENT') rentPart = p.amount;
+          else if (p.paymentType === 'ALL') rentPart = p.amount;
+          else if (p.paymentType === 'MOVE_IN') rentPart = p.amount / 2;
 
-        if (rentPart > 0) {
-          total += rentPart;
-          breakdown.push({
-            paymentId: p.id,
-            tenantName: tenant?.name,
-            unitNumber: tenant?.unitNumber,
-            rentPortion: rentPart,
-            commission: rentPart * 0.06,
-            date: p.createdAt
-          });
+          if (rentPart > 0) {
+            total += rentPart;
+            breakdown.push({
+              paymentId: p.id,
+              tenantName: 'Unknown/Deleted Tenant',
+              unitNumber: '-',
+              rentPortion: rentPart,
+              commission: rentPart * 0.06,
+              date: p.createdAt
+            });
+          }
         }
       });
       
     return { currentMonthRentPaid: total, commissionBreakdown: breakdown };
-  }, [payments, tenants]);
+  }, [payments, tenants, billingStatus, config]);
 
   const currentMonthCommission = currentMonthRentPaid * 0.06;
 
@@ -854,23 +907,23 @@ function MoveOutResolutionModal({ request, tenant, units, onRefresh, onClose }: 
 }
 
 function WaterReadingModal({ target, type, onClose, onRefresh }: any) {
-  const [presentReading, setPresentReading] = useState(0);
+  const [presentReading, setPresentReading] = useState<number | string>('');
   const [previousReading, setPreviousReading] = useState(target?.waterReading || 0);
   const [loading, setLoading] = useState(false);
   const [config, setConfig] = useState<any>(null);
 
   useEffect(() => {
     api.config.get().then(setConfig);
-    setPresentReading(target?.waterReading || 0);
   }, [type, target]);
 
   const rate = config?.waterRate || 100;
-  const consumption = Math.max(0, presentReading - previousReading);
+  const parsedPresent = typeof presentReading === 'number' ? presentReading : (parseFloat(presentReading as string) || 0);
+  const consumption = Math.max(0, parsedPresent - previousReading);
   const totalAmount = consumption * rate;
 
   const handleSubmit = async (e: any) => {
     e.preventDefault();
-    if (presentReading < previousReading) {
+    if (parsedPresent < previousReading) {
       alert("Present reading cannot be less than previous reading.");
       return;
     }
@@ -881,7 +934,7 @@ function WaterReadingModal({ target, type, onClose, onRefresh }: any) {
         unitNumber: target.unitNumber,
         type: 'TENANT',
         previousReading,
-        presentReading,
+        presentReading: parsedPresent,
         consumption,
         rate,
         amount: totalAmount
@@ -929,7 +982,7 @@ function WaterReadingModal({ target, type, onClose, onRefresh }: any) {
               type="number"
               step="0.01"
               value={presentReading}
-              onChange={e => setPresentReading(parseFloat(e.target.value) || 0)}
+              onChange={e => setPresentReading(e.target.value)}
               className="w-full bg-zinc-800 border-none rounded-lg px-4 py-3 text-lg font-mono focus:ring-1 focus:ring-cyan-500/50 outline-none"
               autoFocus
             />

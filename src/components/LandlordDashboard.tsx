@@ -991,14 +991,46 @@ function ReportsTab({ payments, expenses, tenants, serviceRequests, units, onRef
   const totalExpenses = filteredExpenses.reduce((sum: number, e: any) => sum + e.amount, 0);
   const netProfit = totalRevenue - totalExpenses;
 
+  let rentRevenue = 0;
+  let waterRevenue = 0;
+  let garbageRevenue = 0;
+  let deductionRevenue = 0;
+
+  approvedPayments.forEach((p: any) => {
+    if (['DEPOSIT', 'REFUND'].includes(p.paymentType)) return;
+    
+    if (p.paymentType === 'WATER') waterRevenue += p.amount;
+    else if (p.paymentType === 'GARBAGE') garbageRevenue += p.amount;
+    else if (p.paymentType === 'REPAIR_DEDUCTION') deductionRevenue += p.amount;
+    else if (p.paymentType === 'MOVE_IN') rentRevenue += p.amount / 2;
+    else if (p.paymentType === 'RENT') rentRevenue += p.amount;
+    else if (p.paymentType === 'ALL') {
+      const tenant = tenants.find((t: any) => t.id === p.tenantId);
+      // We assume standard utilities for this tenant (or default to 0 if not set)
+      const tWater = tenant?.waterBill || 0;
+      const tGarbage = tenant?.garbageFee || 0;
+      const calcRent = Math.max(0, p.amount - tWater - tGarbage);
+      
+      rentRevenue += calcRent;
+      // The rest of the payment covers the utilities
+      const rem = p.amount - calcRent;
+      if (rem > 0) {
+        // Distribute proportionally or just try to cover water then garbage
+        if (rem >= tWater) {
+          waterRevenue += tWater;
+          garbageRevenue += rem - tWater;
+        } else {
+          waterRevenue += rem;
+        }
+      }
+    }
+  });
+
   const revenueByTypeRaw = [
-    { name: 'Rent', value: approvedPayments.filter((p: any) => p.paymentType === 'RENT' || p.paymentType === 'ALL' || p.paymentType === 'MOVE_IN').reduce((sum: number, p: any) => {
-      if (p.paymentType === 'MOVE_IN') return sum + (p.amount / 2);
-      return sum + (p.paymentType === 'RENT' || p.paymentType === 'ALL' ? p.amount : 0);
-    }, 0) },
-    { name: 'Water', value: approvedPayments.filter((p: any) => p.paymentType === 'WATER').reduce((sum: number, p: any) => sum + p.amount, 0) },
-    { name: 'Garbage', value: approvedPayments.filter((p: any) => p.paymentType === 'GARBAGE').reduce((sum: number, p: any) => sum + p.amount, 0) },
-    { name: 'Deductions', value: approvedPayments.filter((p: any) => p.paymentType === 'REPAIR_DEDUCTION').reduce((sum: number, p: any) => sum + p.amount, 0) },
+    { name: 'Rent', value: rentRevenue },
+    { name: 'Water', value: waterRevenue },
+    { name: 'Garbage', value: garbageRevenue },
+    { name: 'Deductions', value: deductionRevenue },
   ];
   
   const revenueByType = revenueByTypeRaw.filter(item => item.value > 0);
@@ -1080,8 +1112,9 @@ function ReportsTab({ payments, expenses, tenants, serviceRequests, units, onRef
             {revenueByType.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
-                  <Pie 
-                    shape={renderActiveShape}
+                  <Pie
+                    activeIndex={activeIndex}
+                    activeShape={renderActiveShape}
                     data={revenueByType}
                     cx="50%"
                     cy="50%"
