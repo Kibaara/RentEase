@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format, startOfMonth, endOfMonth, isWithinInterval, parseISO } from 'date-fns';
+import { sortUnitsChronologically } from './LandlordDashboard';
 
 export default function AgentDashboard({ onLogout }: any) {
   const [activeTab, setActiveTab] = useState('tenants');
@@ -33,48 +34,81 @@ export default function AgentDashboard({ onLogout }: any) {
       const tenantPayments = payments.filter((p: any) => p.tenantId === tenant.id && p.status === 'APPROVED');
       const paymentsThisMonth = tenantPayments.filter((p: any) => isWithinInterval(parseISO(p.createdAt), { start, end }));
       
-      let paidThisMonth = 0;
       let rawPaymentsThisMonth = 0;
+      let nonRentObligationsPaidThisMonth = 0;
+      let pureRentPaidThisMonth = 0;
 
+      const isMovedInThisMonth = tenant.moveInDate 
+        ? parseISO(tenant.moveInDate) >= start 
+        : parseISO(tenant.createdAt) >= start;
+        
       paymentsThisMonth.forEach((p: any) => {
         rawPaymentsThisMonth += p.amount;
-        if (p.paymentType === 'RENT') paidThisMonth += p.amount;
-        else if (p.paymentType === 'ALL') {
-          const tWater = tenant.waterBill || 0;
-          const tGarbage = tenant.garbageFee || config?.garbageFee || 0;
-          paidThisMonth += Math.max(0, p.amount - tWater - tGarbage);
+        if (p.paymentType === 'RENT') pureRentPaidThisMonth += p.amount;
+        else if (p.paymentType === 'MOVE_IN') pureRentPaidThisMonth += p.amount / 2;
+        else if (['WATER', 'GARBAGE', 'DEPOSIT', 'REPAIR_DEDUCTION'].includes(p.paymentType)) {
+          // purely non-rent
+        } else {
+          // ALL, MPESA, BANK, CASH, etc... treats as lumpsum
+          pureRentPaidThisMonth += p.amount;
         }
-        else if (p.paymentType === 'MOVE_IN') paidThisMonth += p.amount / 2;
       });
+
+      // Deduct this month's utilities from the lumpsum rent paid
+      // We only deduct it once per tenant for the month if they paid a lumpsum
+      const hasLumpsum = paymentsThisMonth.some((p: any) => !['RENT', 'MOVE_IN', 'WATER', 'GARBAGE', 'DEPOSIT', 'REPAIR_DEDUCTION'].includes(p.paymentType));
+      
+      if (hasLumpsum) {
+        const utilities = (tenant.waterBill || 0) + (tenant.garbageFee || config?.garbageFee || 0);
+        pureRentPaidThisMonth = Math.max(0, pureRentPaidThisMonth - utilities);
+        
+        if (isMovedInThisMonth) {
+          pureRentPaidThisMonth = Math.max(0, pureRentPaidThisMonth - (tenant.depositAmount || 0));
+        }
+      }
 
       const currentBalance = tenant.totalBalance || 0;
       const estimatedInvoiceAmount = tenant.status === 'ACTIVE' ? ((tenant.rentAmount || 0) + (tenant.waterBill || 0) + (tenant.garbageFee || config?.garbageFee || 0)) : 0;
+      
+      // Calculate start of month balance
+      // If balance is > 0, they had arrears. If < 0, they had overpaid (credit)
       const startBalance = currentBalance - (billingStatus?.isInvoiced ? estimatedInvoiceAmount : 0) + rawPaymentsThisMonth;
 
       let carryOverCredit = startBalance < 0 ? Math.abs(startBalance) : 0;
+      
+      // Calculate what they actually OWE this month for RENT only
+      // Past arrears in rent? we assume any past positive balance is rent arrears
       let pastArrears = startBalance > 0 ? startBalance : 0;
-      let rentDue = tenant.status === 'ACTIVE' ? (tenant.rentAmount || 0) : 0;
-      let rentCollectedThisMonth = 0;
+      
+      // But if they moved in this month, the startBalance includes their deposit!
+      if (isMovedInThisMonth && startBalance > 0) {
+        pastArrears = Math.max(0, pastArrears - (tenant.depositAmount || 0));
+      }
 
+      let rentDueThisMonth = tenant.status === 'ACTIVE' ? (tenant.rentAmount || 0) : 0;
+      let rentToCommission = 0;
+
+      // 1. Commission on overpayment from past months applied to this month's rent
       if (carryOverCredit > 0) {
-        let appliedCredit = Math.min(carryOverCredit, rentDue);
-        rentCollectedThisMonth += appliedCredit;
-        rentDue -= appliedCredit;
+        let appliedCredit = Math.min(carryOverCredit, rentDueThisMonth);
+        rentToCommission += appliedCredit;
+        rentDueThisMonth -= appliedCredit;
       }
 
-      if (paidThisMonth > 0) {
-        let paymentApplied = Math.min(paidThisMonth, pastArrears + rentDue);
-        rentCollectedThisMonth += paymentApplied;
+      // 2. Commission on payments made this month applied to arrears or current rent
+      if (pureRentPaidThisMonth > 0) {
+        let paymentApplied = Math.min(pureRentPaidThisMonth, pastArrears + rentDueThisMonth);
+        rentToCommission += paymentApplied;
       }
 
-      if (rentCollectedThisMonth > 0) {
-        total += rentCollectedThisMonth;
+      if (rentToCommission > 0) {
+        total += rentToCommission;
         breakdown.push({
           paymentId: paymentsThisMonth.length > 0 ? paymentsThisMonth[0].id : `carry-over-${tenant.id}`,
           tenantName: tenant.name,
           unitNumber: tenant.unitNumber,
-          rentPortion: rentCollectedThisMonth,
-          commission: rentCollectedThisMonth * 0.06,
+          rentPortion: rentToCommission,
+          commission: rentToCommission * 0.06,
           date: paymentsThisMonth.length > 0 ? paymentsThisMonth[0].createdAt : new Date().toISOString(),
           note: paymentsThisMonth.length === 0 ? 'From Overpayment' : undefined
         });
@@ -88,8 +122,10 @@ export default function AgentDashboard({ onLogout }: any) {
         if (!tenants.some((t: any) => t.id === p.tenantId)) {
           let rentPart = 0;
           if (p.paymentType === 'RENT') rentPart = p.amount;
-          else if (p.paymentType === 'ALL') rentPart = p.amount;
           else if (p.paymentType === 'MOVE_IN') rentPart = p.amount / 2;
+          else if (!['WATER', 'GARBAGE', 'DEPOSIT', 'REPAIR_DEDUCTION'].includes(p.paymentType)) {
+            rentPart = p.amount;
+          }
 
           if (rentPart > 0) {
             total += rentPart;
@@ -150,8 +186,8 @@ export default function AgentDashboard({ onLogout }: any) {
       try {
         const data = await api.dashboard.summary();
         if (isMounted) {
-          setTenants(data.users.filter((u: any) => u.role === 'TENANT'));
-          setUnits(data.units);
+          setTenants(sortUnitsChronologically(data.users.filter((u: any) => u.role === 'TENANT')));
+          setUnits(sortUnitsChronologically(data.units));
           setPayments(data.payments);
           setRequests(data.requests);
           setExpenses(data.expenses);
@@ -183,8 +219,8 @@ export default function AgentDashboard({ onLogout }: any) {
   useEffect(() => {
     if (refreshTrigger > 0) {
       api.dashboard.summary().then(data => {
-        setTenants(data.users.filter((u: any) => u.role === 'TENANT'));
-        setUnits(data.units);
+        setTenants(sortUnitsChronologically(data.users.filter((u: any) => u.role === 'TENANT')));
+        setUnits(sortUnitsChronologically(data.units));
         setPayments(data.payments);
         setRequests(data.requests);
         setExpenses(data.expenses);
@@ -724,15 +760,20 @@ function MaintenanceTab({ requests, tenants, onRefresh }: any) {
     }
   };
 
+  const sortedRequests = sortUnitsChronologically(requests.map((r: any) => ({
+    ...r,
+    unitNumber: tenants.find((t: any) => t.id === r.tenantId)?.unitNumber || ''
+  })));
+
   return (
     <div className="space-y-6">
-      {requests.length === 0 && (
+      {sortedRequests.length === 0 && (
         <div className="text-center py-20 bg-zinc-900/30 rounded-2xl border border-dashed border-zinc-800 text-zinc-600">
           No pending repair requests.
         </div>
       )}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-        {requests.map((r: any) => (
+        {sortedRequests.map((r: any) => (
           <Card key={r.id} className="bg-zinc-900/50 border-zinc-900">
             <div className="p-5 space-y-4">
               <div className="flex justify-between items-start">
@@ -768,15 +809,20 @@ function MoveOutsTab({ requests, tenants, units, onRefresh }: any) {
 
   const getTenantName = (id: string) => tenants.find((t: any) => t.id === id)?.name || 'Unknown';
 
+  const sortedRequests = sortUnitsChronologically(requests.map((r: any) => ({
+    ...r,
+    unitNumber: tenants.find((t: any) => t.id === r.tenantId)?.unitNumber || ''
+  })));
+
   return (
     <div className="space-y-6">
-      {requests.length === 0 && (
+      {sortedRequests.length === 0 && (
         <div className="text-center py-20 bg-zinc-900/30 rounded-2xl border border-dashed border-zinc-800 text-zinc-600">
           No pending move-out notices.
         </div>
       )}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-        {requests.map((r: any) => (
+        {sortedRequests.map((r: any) => (
           <Card key={r.id} className="bg-zinc-900/50 border-zinc-900">
             <div className="p-5 space-y-4">
               <div className="flex justify-between items-start">

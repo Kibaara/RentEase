@@ -15,6 +15,53 @@ import {
   LineChart, Line, PieChart, Pie, Cell, Sector 
 } from 'recharts';
 
+export function sortUnitsChronologically(items: any[]) {
+  const orderMap: Record<string, number> = {
+    'shop': 1,
+    'g2': 2,
+    'a': 3,
+    'b': 4,
+    'c': 5,
+    'd': 6,
+    'penta': 7
+  };
+
+  const getPrefix = (u: string) => {
+    const l = u.toLowerCase();
+    if (l.startsWith('shop')) return 'shop';
+    if (l.startsWith('g2')) return 'g2';
+    if (l.startsWith('penta')) return 'penta';
+    const firstChar = l.charAt(0);
+    if (['a', 'b', 'c', 'd'].includes(firstChar)) return firstChar;
+    return 'z';
+  };
+
+  const getNum = (u: string) => {
+    const match = u.match(/\d+/);
+    return match ? parseInt(match[0], 10) : 0;
+  };
+
+  return [...items].sort((u1, u2) => {
+    const val1 = u1.unitNumber || '';
+    const val2 = u2.unitNumber || '';
+    
+    const pref1 = getPrefix(val1);
+    const pref2 = getPrefix(val2);
+    
+    if (orderMap[pref1] !== orderMap[pref2]) {
+      return (orderMap[pref1] || 99) - (orderMap[pref2] || 99);
+    }
+    
+    const num1 = getNum(val1);
+    const num2 = getNum(val2);
+    if (num1 !== num2) {
+      return num1 - num2;
+    }
+    
+    return val1.localeCompare(val2);
+  });
+}
+
 export default function LandlordDashboard({ onLogout }: any) {
   const [activeTab, setActiveTab] = useState('overview');
   const [isCollapsed, setIsCollapsed] = useState(window.innerWidth < 768);
@@ -42,8 +89,8 @@ export default function LandlordDashboard({ onLogout }: any) {
         const readings = await api.waterReadings.list();
 
         if (isMounted) {
-          setUnits(data.units);
-          setTenants(data.users.filter((u: any) => u.role === 'TENANT'));
+          setUnits(sortUnitsChronologically(data.units));
+          setTenants(sortUnitsChronologically(data.users.filter((u: any) => u.role === 'TENANT')));
           setAgents(data.users.filter((u: any) => u.role === 'AGENT'));
           setPayments(data.payments);
           setExpenses(data.expenses);
@@ -76,8 +123,8 @@ export default function LandlordDashboard({ onLogout }: any) {
   useEffect(() => {
     if (refreshTrigger > 0) {
       api.dashboard.summary().then((data: any) => {
-        setUnits(data.units);
-        setTenants(data.users.filter((u: any) => u.role === 'TENANT'));
+        setUnits(sortUnitsChronologically(data.units));
+        setTenants(sortUnitsChronologically(data.users.filter((u: any) => u.role === 'TENANT')));
         setAgents(data.users.filter((u: any) => u.role === 'AGENT'));
         setPayments(data.payments);
         setExpenses(data.expenses);
@@ -815,7 +862,7 @@ function ReportsTab({ payments, expenses, tenants, serviceRequests, units, onRef
   const [reportMonth, setReportMonth] = useState(format(new Date(), 'yyyy-MM'));
 
   const filteredPayments = useMemo(() => {
-    return payments.filter((p: any) => {
+    const filtered = payments.filter((p: any) => {
       const tenant = tenants.find((t: any) => t.id === p.tenantId);
       const tenantName = (tenant?.name || '').toLowerCase();
       const unitNumber = (tenant?.unitNumber || '').toLowerCase();
@@ -834,10 +881,18 @@ function ReportsTab({ payments, expenses, tenants, serviceRequests, units, onRef
 
       return searchMatch && typeMatch && dateMatch;
     });
+
+    // Sort chronologically by unit number
+    const paymentsWithUnits = filtered.map((p: any) => ({
+      ...p,
+      unitNumber: tenants.find((t: any) => t.id === p.tenantId)?.unitNumber || ''
+    }));
+    
+    return sortUnitsChronologically(paymentsWithUnits);
   }, [payments, tenants, searchTerm, paymentTypeFilter, reportMonth]);
 
   const filteredExpenses = useMemo(() => {
-    return expenses.filter((e: any) => {
+    const filtered = expenses.filter((e: any) => {
       const unitNumber = (e.unitNumber || '').toLowerCase();
       const searchMatch = !searchTerm || unitNumber.includes(searchTerm.toLowerCase()) || 
                           (e.description || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -851,6 +906,8 @@ function ReportsTab({ payments, expenses, tenants, serviceRequests, units, onRef
 
       return searchMatch && dateMatch;
     });
+
+    return sortUnitsChronologically(filtered);
   }, [expenses, searchTerm, reportMonth]);
 
   const onPieEnter = (_: any, index: number) => {
@@ -2397,7 +2454,7 @@ function PaymentsTab({ payments, tenants, units }: any) {
   const [dateRange, setDateRange] = useState({ start: '', end: '' });
 
   const filteredPayments = useMemo(() => {
-    return payments.filter((p: any) => {
+    const filtered = payments.filter((p: any) => {
       const tenant = tenants.find((t: any) => t.id === p.tenantId);
       const tenantName = (tenant?.name || '').toLowerCase();
       const unitNumber = (tenant?.unitNumber || '').toLowerCase();
@@ -2419,7 +2476,15 @@ function PaymentsTab({ payments, tenants, units }: any) {
       }
 
       return searchMatch && typeMatch && dateMatch;
-    }).sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    });
+    
+    // Sort chronologically by unit number instead of date
+    const paymentsWithUnits = filtered.map((p: any) => ({
+      ...p,
+      unitNumber: tenants.find((t: any) => t.id === p.tenantId)?.unitNumber || ''
+    }));
+    
+    return sortUnitsChronologically(paymentsWithUnits);
   }, [payments, tenants, searchTerm, paymentTypeFilter, dateRange]);
 
   return (
@@ -2598,11 +2663,15 @@ function InvoicesTab({ tenants, onRefresh }: any) {
   };
 
   const filteredInvoices = useMemo(() => {
-    return invoices.filter((i: any) => 
+    return sortUnitsChronologically(invoices.map((i: any) => ({
+      ...i,
+      tenantName: tenants.find((t: any) => t.id === i.tenantId)?.name || 'Unknown Tenant',
+      unitNumber: tenants.find((t: any) => t.id === i.tenantId)?.unitNumber || i.unitNumber
+    }))).filter((i: any) => 
       (i.tenantName || '').toLowerCase().includes(searchTerm.toLowerCase()) || 
       (i.unitNumber || '').toLowerCase().includes(searchTerm.toLowerCase())
     );
-  }, [invoices, searchTerm]);
+  }, [invoices, searchTerm, tenants]);
 
   return (
     <div className="space-y-6">
