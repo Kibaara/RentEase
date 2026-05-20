@@ -45,7 +45,7 @@ export default function AgentDashboard({ onLogout }: any) {
       paymentsThisMonth.forEach((p: any) => {
         rawPaymentsThisMonth += p.amount;
         if (p.paymentType === 'RENT') pureRentPaidThisMonth += p.amount;
-        else if (p.paymentType === 'MOVE_IN') pureRentPaidThisMonth += p.amount / 2;
+        else if (p.paymentType === 'MOVE_IN') pureRentPaidThisMonth += (tenant.rentAmount || (p.amount / 2));
         else if (['WATER', 'GARBAGE', 'DEPOSIT', 'REPAIR_DEDUCTION'].includes(p.paymentType)) {
           // purely non-rent
         } else {
@@ -59,7 +59,7 @@ export default function AgentDashboard({ onLogout }: any) {
       const hasLumpsum = paymentsThisMonth.some((p: any) => !['RENT', 'MOVE_IN', 'WATER', 'GARBAGE', 'DEPOSIT', 'REPAIR_DEDUCTION'].includes(p.paymentType));
       
       if (hasLumpsum) {
-        const utilities = (tenant.waterBill || 0) + (tenant.garbageFee || config?.garbageFee || 0);
+        const utilities = isMovedInThisMonth ? 0 : ((tenant.waterBill || 0) + (tenant.garbageFee || config?.garbageFee || 0));
         pureRentPaidThisMonth = Math.max(0, pureRentPaidThisMonth - utilities);
         
         if (isMovedInThisMonth) {
@@ -68,7 +68,7 @@ export default function AgentDashboard({ onLogout }: any) {
       }
 
       const currentBalance = tenant.totalBalance || 0;
-      const estimatedInvoiceAmount = tenant.status === 'ACTIVE' ? ((tenant.rentAmount || 0) + (tenant.waterBill || 0) + (tenant.garbageFee || config?.garbageFee || 0)) : 0;
+      const estimatedInvoiceAmount = tenant.status === 'ACTIVE' ? ((tenant.rentAmount || 0) + (isMovedInThisMonth ? 0 : ((tenant.waterBill || 0) + (tenant.garbageFee || config?.garbageFee || 0)))) : 0;
       
       // Calculate start of month balance
       // If balance is > 0, they had arrears. If < 0, they had overpaid (credit)
