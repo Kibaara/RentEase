@@ -2501,11 +2501,7 @@ function PaymentsTab({ payments, tenants, units }: any) {
 
   const handleEditSave = async (id: string) => {
     try {
-      await fetch(`/api/payments/${id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
-        body: JSON.stringify(editForm)
-      });
+      await api.payments.update(id, editForm);
       setEditingPayment(null);
       // Wait for refresh
       window.location.reload(); 
