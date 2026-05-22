@@ -312,9 +312,7 @@ function OverviewTab({ units, tenants, payments, expenses, serviceRequests, stat
       .filter((p: any) => p.status === 'APPROVED' && !['DEPOSIT', 'REFUND'].includes(p.paymentType) && isWithinInterval(parseISO(p.createdAt), { start: currentMonth, end: endOfCurrentMonth }))
       .reduce((sum: number, p: any) => {
         if (p.paymentType === 'MOVE_IN') {
-          const tenant = tenants.find((t: any) => t.id === p.tenantId);
-          const rentPortion = tenant ? tenant.rentAmount : (p.amount / 2);
-          return sum + rentPortion;
+          return sum + (p.amount / 2);
         }
         return sum + p.amount;
       }, 0);
