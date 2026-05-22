@@ -222,13 +222,13 @@ async function startServer() {
 
   app.post("/api/payments", requireAuth, async (req: any, res) => {
     try {
-      const { amount, paymentType, referenceCode, status, tenantId, notes, createdAt } = req.body;
+      const { amount, paymentType, paymentMethod, referenceCode, status, tenantId, notes, createdAt } = req.body;
       const id = crypto.randomUUID();
       const tId = req.user.role === 'TENANT' ? req.user.id : tenantId;
       
       const insertDate = createdAt ? new Date(createdAt).toISOString() : new Date().toISOString();
-      await db.prepare('INSERT INTO payments (id, "tenantId", amount, "paymentType", "referenceCode", status, notes, "createdAt") VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(id, tId, amount, paymentType, referenceCode, status || 'PENDING', notes, insertDate);
+      await db.prepare('INSERT INTO payments (id, "tenantId", amount, "paymentType", "paymentMethod", "referenceCode", status, notes, "createdAt") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(id, tId, amount, paymentType, paymentMethod || 'M-PESA', referenceCode, status || 'PENDING', notes, insertDate);
       
       await auditService.log({
         userId: req.user.id,
@@ -236,7 +236,7 @@ async function startServer() {
         action: 'SUBMIT_PAYMENT',
         entityType: 'PAYMENT',
         entityId: id,
-        details: { amount, paymentType, referenceCode, status: status || 'PENDING' },
+        details: { amount, paymentType, paymentMethod: paymentMethod || 'M-PESA', referenceCode, status: status || 'PENDING' },
         ipAddress: req.ip
       });
 
@@ -249,35 +249,45 @@ async function startServer() {
   app.patch("/api/payments/:id", requireAuth, isStaff, async (req: any, res) => {
     try {
       const { id } = req.params;
-      const { status } = req.body;
+      const { status, paymentType, paymentMethod } = req.body;
       
       const payment = await db.prepare("SELECT * FROM payments WHERE id = ?").get(id) as any;
       if (!payment) return res.status(404).json({ error: "Payment not found" });
 
-      if (status === 'APPROVED' && payment.status !== 'APPROVED') {
-        const tenant = await db.prepare("SELECT * FROM users WHERE id = ?").get(payment.tenantId) as any;
-        if (tenant) {
-          if (payment.paymentType === 'MOVE_IN') {
-            const depositPortion = payment.amount / 2;
-            const rentPortion = payment.amount / 2;
-            await db.prepare('UPDATE users SET "totalBalance" = "totalBalance" - ?, "depositAmount" = "depositAmount" + ?, "isMovedIn" = TRUE WHERE id = ?')
-              .run(payment.amount, depositPortion, tenant.id);
-          } else {
-            await db.prepare('UPDATE users SET "totalBalance" = "totalBalance" - ? WHERE id = ?')
-              .run(payment.amount, tenant.id);
-          }
-        }
+      if (paymentType && paymentType !== payment.paymentType) {
+         await db.prepare('UPDATE payments SET "paymentType" = ? WHERE id = ?').run(paymentType, id);
+      }
+      
+      if (paymentMethod && paymentMethod !== payment.paymentMethod) {
+         await db.prepare('UPDATE payments SET "paymentMethod" = ? WHERE id = ?').run(paymentMethod, id);
       }
 
-      await db.prepare("UPDATE payments SET status = ? WHERE id = ?").run(status, id);
+      if (status && status !== payment.status) {
+        if (status === 'APPROVED' && payment.status !== 'APPROVED') {
+          const tenant = await db.prepare("SELECT * FROM users WHERE id = ?").get(payment.tenantId) as any;
+          if (tenant) {
+            const resolvedPaymentType = paymentType || payment.paymentType;
+            if (resolvedPaymentType === 'MOVE_IN') {
+              const depositPortion = payment.amount / 2;
+              const rentPortion = payment.amount / 2;
+              await db.prepare('UPDATE users SET "totalBalance" = "totalBalance" - ?, "depositAmount" = "depositAmount" + ?, "isMovedIn" = TRUE WHERE id = ?')
+                .run(payment.amount, depositPortion, tenant.id);
+            } else {
+              await db.prepare('UPDATE users SET "totalBalance" = "totalBalance" - ? WHERE id = ?')
+                .run(payment.amount, tenant.id);
+            }
+          }
+        }
+        await db.prepare("UPDATE payments SET status = ? WHERE id = ?").run(status, id);
+      }
       
       await auditService.log({
         userId: req.user.id,
         userEmail: req.user.email,
-        action: 'UPDATE_PAYMENT_STATUS',
+        action: 'UPDATE_PAYMENT',
         entityType: 'PAYMENT',
         entityId: id,
-        details: { newStatus: status },
+        details: { newStatus: status, newType: paymentType, newMethod: paymentMethod },
         ipAddress: req.ip
       });
 

@@ -24,6 +24,7 @@ export default function TenantDashboard({ onLogout }: any) {
 
   // Form states
   const [payType, setPayType] = useState('ALL');
+  const [payMethod, setPayMethod] = useState('M-PESA');
   const [payAmount, setPayAmount] = useState('');
   const [refCode, setRefCode] = useState('');
   const [reqType, setReqType] = useState('REPAIR');
@@ -108,6 +109,7 @@ export default function TenantDashboard({ onLogout }: any) {
       await api.payments.create({
         amount: parseFloat(payAmount),
         paymentType: !tenantData.isMovedIn ? 'MOVE_IN' : payType,
+        paymentMethod: payMethod,
         referenceCode: refCode,
         status: 'PENDING',
         tenantId: tenantData.id
@@ -598,6 +600,18 @@ export default function TenantDashboard({ onLogout }: any) {
                       </select>
                     </div>
                     <div className="space-y-2">
+                      <label className="text-xs font-bold text-zinc-500 uppercase tracking-wider">Payment Method</label>
+                      <select 
+                        value={payMethod} 
+                        onChange={e => setPayMethod(e.target.value)}
+                        className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-3 text-sm focus:ring-1 focus:ring-zinc-700 outline-none"
+                      >
+                        <option value="M-PESA">M-PESA</option>
+                        <option value="BANK">Bank Transfer</option>
+                        <option value="CASH">Cash</option>
+                      </select>
+                    </div>
+                    <div className="space-y-2">
                       <label className="text-xs font-bold text-zinc-500 uppercase tracking-wider">Amount (KSH)</label>
                       <input 
                         type="number" 
@@ -608,7 +622,7 @@ export default function TenantDashboard({ onLogout }: any) {
                         className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-3 text-sm focus:ring-1 focus:ring-zinc-700 outline-none"
                       />
                     </div>
-                    <div className="space-y-2 md:col-span-2">
+                    <div className="space-y-2">
                       <label className="text-xs font-bold text-zinc-500 uppercase tracking-wider">Transaction Reference Code</label>
                       <input 
                         type="text" 
@@ -641,7 +655,7 @@ export default function TenantDashboard({ onLogout }: any) {
                         <div key={p.id} className="p-4 flex justify-between items-center hover:bg-zinc-800/30 transition-all">
                           <div>
                             <div className="text-sm font-medium">{p.paymentType}</div>
-                            <div className="text-[10px] text-zinc-500">{format(new Date(p.createdAt), 'MMM d, yyyy')}</div>
+                            <div className="text-[10px] text-zinc-500">{format(new Date(p.createdAt), 'MMM d, yyyy')} • {p.paymentMethod || 'M-PESA'}</div>
                           </div>
                           <div className="text-right">
                             <div className="text-sm font-bold">KSH {p.amount.toLocaleString()}</div>

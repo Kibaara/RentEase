@@ -987,6 +987,7 @@ function ReportsTab({ payments, expenses, tenants, serviceRequests, units, onRef
         tenantId: tenant.id,
         amount: request.refundAmount,
         paymentType: 'REFUND',
+        paymentMethod: 'SYSTEM',
         status: 'APPROVED',
         referenceCode: `REF-${request.id.slice(0, 5)}`,
         notes: `Deposit refund for ${tenant.name}`
@@ -998,6 +999,7 @@ function ReportsTab({ payments, expenses, tenants, serviceRequests, units, onRef
           tenantId: tenant.id,
           amount: request.repairCosts,
           paymentType: 'REPAIR_DEDUCTION',
+          paymentMethod: 'SYSTEM',
           status: 'APPROVED',
           referenceCode: `DED-${request.id.slice(0, 5)}`,
           notes: `Repair deduction from deposit for ${tenant.name}`
@@ -1061,7 +1063,8 @@ function ReportsTab({ payments, expenses, tenants, serviceRequests, units, onRef
     else if (p.paymentType === 'REPAIR_DEDUCTION') deductionRevenue += p.amount;
     else if (p.paymentType === 'MOVE_IN') rentRevenue += p.amount / 2;
     else if (p.paymentType === 'RENT') rentRevenue += p.amount;
-    else if (p.paymentType === 'ALL') {
+    else {
+      // Treat ALL, GENERAL, or any other type as a lumpsum
       const tenant = tenants.find((t: any) => t.id === p.tenantId);
       // We assume standard utilities for this tenant (or default to 0 if not set)
       const tWater = tenant?.waterBill || 0;
@@ -1131,7 +1134,7 @@ function ReportsTab({ payments, expenses, tenants, serviceRequests, units, onRef
               <option value="MOVE_IN">Move In (Total)</option>
               <option value="REFUND">Refund</option>
               <option value="REPAIR_DEDUCTION">Repair Deduction</option>
-              <option value="MPESA">M-PESA / General</option>
+              <option value="GENERAL">General / Lumpsum</option>
             </select>
           </div>
 
@@ -1705,7 +1708,8 @@ function RecordsTab({ units, tenants, onRefresh }: any) {
                 await api.payments.create({
                   tenantId: tenant.id,
                   amount: paymentAmount,
-                  paymentType: 'MPESA',
+                  paymentType: 'GENERAL',
+                  paymentMethod: 'SYSTEM',
                   referenceCode: `IMPORTED_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
                   status: 'APPROVED',
                   notes: `Imported past payment for ${defaultMonth}`,
@@ -2487,6 +2491,29 @@ function PaymentsTab({ payments, tenants, units }: any) {
     return sortUnitsChronologically(paymentsWithUnits);
   }, [payments, tenants, searchTerm, paymentTypeFilter, dateRange]);
 
+  const [editingPayment, setEditingPayment] = useState<any>(null);
+  const [editForm, setEditForm] = useState({ paymentType: '', paymentMethod: '' });
+
+  const handleEditInit = (payment: any) => {
+    setEditingPayment(payment.id);
+    setEditForm({ paymentType: payment.paymentType, paymentMethod: payment.paymentMethod || 'M-PESA' });
+  };
+
+  const handleEditSave = async (id: string) => {
+    try {
+      await fetch(`/api/payments/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
+        body: JSON.stringify(editForm)
+      });
+      setEditingPayment(null);
+      // Wait for refresh
+      window.location.reload(); 
+    } catch (e: any) {
+      alert("Error saving: " + e.message);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
@@ -2527,10 +2554,10 @@ function PaymentsTab({ payments, tenants, units }: any) {
               <option value="MOVE_IN">Move In (Total)</option>
               <option value="REFUND">Refund</option>
               <option value="REPAIR_DEDUCTION">Repair Deduction</option>
-              <option value="MPESA">M-PESA / General</option>
+              <option value="GENERAL">General / Lumpsum</option>
             </select>
           </div>
-
+          
           <div className="w-full md:w-36 space-y-1">
             <label className="text-xs font-bold text-zinc-500 uppercase">Start Date</label>
             <input 
@@ -2561,14 +2588,17 @@ function PaymentsTab({ payments, tenants, units }: any) {
                 <th className="px-6 py-4 text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Date</th>
                 <th className="px-6 py-4 text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Tenant</th>
                 <th className="px-6 py-4 text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Type</th>
+                <th className="px-6 py-4 text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Method</th>
                 <th className="px-6 py-4 text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Ref Code</th>
                 <th className="px-6 py-4 text-[10px] font-bold text-zinc-500 uppercase tracking-widest text-right">Amount</th>
                 <th className="px-6 py-4 text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Status</th>
+                <th className="px-6 py-4 text-[10px] font-bold text-zinc-500 uppercase tracking-widest text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-800/50">
               {filteredPayments.map((payment: any) => {
                 const tenant = tenants.find((t: any) => t.id === payment.tenantId);
+                const isEditing = editingPayment === payment.id;
                 return (
                   <tr key={payment.id} className="hover:bg-zinc-900/50 transition-colors">
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-zinc-300">
@@ -2585,9 +2615,39 @@ function PaymentsTab({ payments, tenants, units }: any) {
                       )}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
-                      <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold tracking-widest bg-zinc-800 text-zinc-300">
-                        {payment.paymentType.replace('_', ' ')}
-                      </span>
+                      {isEditing ? (
+                        <select
+                          value={editForm.paymentType}
+                          onChange={(e) => setEditForm({ ...editForm, paymentType: e.target.value })}
+                          className="w-full bg-zinc-950 border border-zinc-800 rounded px-2 py-1 text-xs text-zinc-100"
+                        >
+                          <option value="GENERAL">General / Lumpsum</option>
+                          <option value="RENT">Rent Only</option>
+                          <option value="WATER">Water</option>
+                          <option value="GARBAGE">Garbage</option>
+                          <option value="MOVE_IN">Move In</option>
+                          <option value="DEPOSIT">Security Deposit</option>
+                        </select>
+                      ) : (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold tracking-widest bg-zinc-800 text-zinc-300">
+                          {payment.paymentType.replace('_', ' ')}
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      {isEditing ? (
+                        <select
+                          value={editForm.paymentMethod}
+                          onChange={(e) => setEditForm({ ...editForm, paymentMethod: e.target.value })}
+                          className="w-full bg-zinc-950 border border-zinc-800 rounded px-2 py-1 text-xs text-zinc-100"
+                        >
+                          <option value="M-PESA">M-PESA</option>
+                          <option value="BANK">BANK</option>
+                          <option value="CASH">CASH</option>
+                        </select>
+                      ) : (
+                        <span className="text-zinc-400 font-bold text-xs uppercase">{payment.paymentMethod || 'M-PESA'}</span>
+                      )}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap font-mono text-xs text-zinc-400">
                       {payment.referenceCode || 'N/A'}
@@ -2604,12 +2664,28 @@ function PaymentsTab({ payments, tenants, units }: any) {
                         {payment.status}
                       </span>
                     </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-right">
+                      {isEditing ? (
+                        <div className="flex justify-end gap-2">
+                          <button onClick={() => setEditingPayment(null)} className="text-zinc-500 hover:text-zinc-300">
+                            X
+                          </button>
+                          <button onClick={() => handleEditSave(payment.id)} className="text-emerald-500 hover:text-emerald-300">
+                            Save
+                          </button>
+                        </div>
+                      ) : (
+                        <button onClick={() => handleEditInit(payment)} className="text-zinc-500 hover:text-zinc-300 transition-colors text-xs font-bold uppercase">
+                          Edit
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 );
               })}
               {filteredPayments.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-6 py-12 text-center text-zinc-500 text-sm">
+                  <td colSpan={8} className="px-6 py-12 text-center text-zinc-500 text-sm">
                     No payments found matching the filters.
                   </td>
                 </tr>

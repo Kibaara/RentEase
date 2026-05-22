@@ -75,11 +75,15 @@ export const initDb = async () => {
         "tenantId" TEXT NOT NULL REFERENCES users(id),
         amount DOUBLE PRECISION NOT NULL,
         "paymentType" TEXT NOT NULL,
+        "paymentMethod" TEXT DEFAULT 'M-PESA',
         "referenceCode" TEXT NOT NULL,
         status TEXT DEFAULT 'PENDING' CHECK(status IN ('PENDING', 'APPROVED', 'REJECTED')),
         notes TEXT,
         "createdAt" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
+
+      -- Add paymentMethod to existing payments if not present
+      ALTER TABLE payments ADD COLUMN IF NOT EXISTS "paymentMethod" TEXT DEFAULT 'M-PESA';
 
       CREATE TABLE IF NOT EXISTS service_requests (
         id TEXT PRIMARY KEY,

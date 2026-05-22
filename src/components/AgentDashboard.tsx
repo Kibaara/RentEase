@@ -49,7 +49,7 @@ export default function AgentDashboard({ onLogout }: any) {
         else if (['WATER', 'GARBAGE', 'DEPOSIT', 'REPAIR_DEDUCTION'].includes(p.paymentType)) {
           // purely non-rent
         } else {
-          // ALL, MPESA, BANK, CASH, etc... treats as lumpsum
+          // ALL, GENERAL, BANK, CASH, etc... treats as lumpsum
           pureRentPaidThisMonth += p.amount;
         }
       });
@@ -699,6 +699,7 @@ function PaymentsTab({ payments, tenants, onRefresh }: any) {
               <th className="px-6 py-4">Date</th>
               <th className="px-6 py-4">Tenant</th>
               <th className="px-6 py-4">Type</th>
+              <th className="px-6 py-4">Method</th>
               <th className="px-6 py-4">Amount</th>
               <th className="px-6 py-4 text-right">Actions</th>
             </tr>
@@ -712,6 +713,9 @@ function PaymentsTab({ payments, tenants, onRefresh }: any) {
                 <td className="px-6 py-4 font-medium">{getTenantName(p.tenantId)}</td>
                 <td className="px-6 py-4 text-xs text-zinc-400 uppercase tracking-tighter">
                   {p.paymentType.replace(/_/g, ' ')}
+                </td>
+                <td className="px-6 py-4 text-xs font-bold uppercase tracking-wider text-zinc-400">
+                  {p.paymentMethod || 'M-PESA'}
                 </td>
                 <td className="px-6 py-4">
                   <div className="font-bold underline decoration-zinc-800 underline-offset-4">KSH {p.amount.toLocaleString()}</div>
