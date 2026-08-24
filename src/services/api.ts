@@ -86,4 +86,14 @@ export const api = {
     auditLogs: (limit = 100, offset = 0) => request(`/admin/audit-logs?limit=${limit}&offset=${offset}`),
     resetSystem: () => request('/admin/reset', { method: 'POST' }),
   },
+  agent: {
+    // month/year are optional — server defaults to the current period when omitted.
+    // The commission amount itself is always computed server-side; never pass one in.
+    getCommission: (month?: number, year?: number) => {
+      const query = month && year ? `?month=${month}&year=${year}` : '';
+      return request(`/agent/commission${query}`);
+    },
+    requestCommission: (month?: number, year?: number) =>
+      request('/agent/commission/request', { method: 'POST', body: JSON.stringify({ month, year }) }),
+  },
 };

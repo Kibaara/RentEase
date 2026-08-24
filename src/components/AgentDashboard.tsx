@@ -6,7 +6,7 @@ import {
   ChevronLeft, ChevronRight, Loader2, History, Calculator, DoorOpen, Menu, Phone, Mail, BookOpen
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { format, startOfMonth, endOfMonth, isWithinInterval, parseISO } from 'date-fns';
+import { format } from 'date-fns';
 import { sortUnitsChronologically } from './LandlordDashboard';
 
 export default function AgentDashboard({ onLogout }: any) {
@@ -23,133 +23,42 @@ export default function AgentDashboard({ onLogout }: any) {
   const [loading, setLoading] = useState(true);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
 
-  const { currentMonthRentPaid, commissionBreakdown } = useMemo(() => {
-    const start = startOfMonth(new Date());
-    const end = endOfMonth(new Date());
-    
-    let total = 0;
-    const breakdown: any[] = [];
+  // Commission is computed server-side (see /api/agent/commission) so the
+  // agent can never influence their own payout amount from the client.
+  // This component only previews that result and asks the server to log a
+  // request against it — it does not calculate or submit an amount itself.
+  const [commissionData, setCommissionData] = useState<{
+    totalRentCollected: number;
+    totalCommission: number;
+    rate: number;
+    breakdown: any[];
+    alreadyRequested: boolean;
+  } | null>(null);
+  const [commissionLoading, setCommissionLoading] = useState(true);
 
-    tenants.forEach((tenant: any) => {
-      const tenantPayments = payments.filter((p: any) => p.tenantId === tenant.id && p.status === 'APPROVED');
-      const paymentsThisMonth = tenantPayments.filter((p: any) => isWithinInterval(parseISO(p.createdAt), { start, end }));
-      
-      let rawPaymentsThisMonth = 0;
-      let nonRentObligationsPaidThisMonth = 0;
-      let pureRentPaidThisMonth = 0;
+  const loadCommission = async () => {
+    setCommissionLoading(true);
+    try {
+      const data = await api.agent.getCommission();
+      setCommissionData(data);
+    } catch (e) {
+      console.error('Error loading commission:', e);
+      setCommissionData(null);
+    } finally {
+      setCommissionLoading(false);
+    }
+  };
 
-      const isMovedInThisMonth = tenant.moveInDate 
-        ? parseISO(tenant.moveInDate) >= start 
-        : parseISO(tenant.createdAt) >= start;
-        
-      paymentsThisMonth.forEach((p: any) => {
-        rawPaymentsThisMonth += p.amount;
-        if (p.paymentType === 'RENT') pureRentPaidThisMonth += p.amount;
-        else if (p.paymentType === 'MOVE_IN') pureRentPaidThisMonth += (p.amount / 2);
-        else if (['WATER', 'GARBAGE', 'DEPOSIT', 'REPAIR_DEDUCTION'].includes(p.paymentType)) {
-          // purely non-rent
-        } else {
-          // ALL, GENERAL, BANK, CASH, etc... treats as lumpsum
-          pureRentPaidThisMonth += p.amount;
-        }
-      });
+  useEffect(() => {
+    loadCommission();
+  }, [refreshTrigger]);
 
-      // Deduct this month's utilities from the lumpsum rent paid
-      // We only deduct it once per tenant for the month if they paid a lumpsum
-      const hasLumpsum = paymentsThisMonth.some((p: any) => !['RENT', 'MOVE_IN', 'WATER', 'GARBAGE', 'DEPOSIT', 'REPAIR_DEDUCTION'].includes(p.paymentType));
-      
-      if (hasLumpsum) {
-        const utilities = isMovedInThisMonth ? 0 : ((tenant.waterBill || 0) + (tenant.garbageFee || config?.garbageFee || 0));
-        pureRentPaidThisMonth = Math.max(0, pureRentPaidThisMonth - utilities);
-        
-        if (isMovedInThisMonth) {
-          pureRentPaidThisMonth = Math.max(0, pureRentPaidThisMonth - (tenant.depositAmount || 0));
-        }
-      }
-
-      const currentBalance = tenant.totalBalance || 0;
-      const estimatedInvoiceAmount = tenant.status === 'ACTIVE' ? ((tenant.rentAmount || 0) + (isMovedInThisMonth ? 0 : ((tenant.waterBill || 0) + (tenant.garbageFee || config?.garbageFee || 0)))) : 0;
-      
-      // Calculate start of month balance
-      // If balance is > 0, they had arrears. If < 0, they had overpaid (credit)
-      const startBalance = currentBalance - (billingStatus?.isInvoiced ? estimatedInvoiceAmount : 0) + rawPaymentsThisMonth;
-
-      let carryOverCredit = startBalance < 0 ? Math.abs(startBalance) : 0;
-      
-      // Calculate what they actually OWE this month for RENT only
-      // Past arrears in rent? we assume any past positive balance is rent arrears
-      let pastArrears = startBalance > 0 ? startBalance : 0;
-      
-      // But if they moved in this month, the startBalance includes their deposit!
-      if (isMovedInThisMonth && startBalance > 0) {
-        pastArrears = Math.max(0, pastArrears - (tenant.depositAmount || 0));
-      }
-
-      let rentDueThisMonth = tenant.status === 'ACTIVE' ? (tenant.rentAmount || 0) : 0;
-      let rentToCommission = 0;
-
-      // 1. Commission on overpayment from past months applied to this month's rent
-      if (carryOverCredit > 0) {
-        let appliedCredit = Math.min(carryOverCredit, rentDueThisMonth);
-        rentToCommission += appliedCredit;
-        rentDueThisMonth -= appliedCredit;
-      }
-
-      // 2. Commission on payments made this month applied to arrears or current rent
-      if (pureRentPaidThisMonth > 0) {
-        let paymentApplied = Math.min(pureRentPaidThisMonth, pastArrears + rentDueThisMonth);
-        rentToCommission += paymentApplied;
-      }
-
-      if (rentToCommission > 0) {
-        total += rentToCommission;
-        breakdown.push({
-          paymentId: paymentsThisMonth.length > 0 ? paymentsThisMonth[0].id : `carry-over-${tenant.id}`,
-          tenantName: tenant.name,
-          unitNumber: tenant.unitNumber,
-          rentPortion: rentToCommission,
-          commission: rentToCommission * 0.06,
-          date: paymentsThisMonth.length > 0 ? paymentsThisMonth[0].createdAt : new Date().toISOString(),
-          note: paymentsThisMonth.length === 0 ? 'From Overpayment' : undefined
-        });
-      }
-    });
-
-    // Fallback for payments from deleted/unknown tenants
-    payments
-      .filter((p: any) => p.status === 'APPROVED' && isWithinInterval(parseISO(p.createdAt), { start, end }))
-      .forEach((p: any) => {
-        if (!tenants.some((t: any) => t.id === p.tenantId)) {
-          let rentPart = 0;
-          if (p.paymentType === 'RENT') rentPart = p.amount;
-          else if (p.paymentType === 'MOVE_IN') rentPart = p.amount / 2;
-          else if (!['WATER', 'GARBAGE', 'DEPOSIT', 'REPAIR_DEDUCTION'].includes(p.paymentType)) {
-            rentPart = p.amount;
-          }
-
-          if (rentPart > 0) {
-            total += rentPart;
-            breakdown.push({
-              paymentId: p.id,
-              tenantName: 'Unknown/Deleted Tenant',
-              unitNumber: '-',
-              rentPortion: rentPart,
-              commission: rentPart * 0.06,
-              date: p.createdAt
-            });
-          }
-        }
-      });
-      
-    return { currentMonthRentPaid: total, commissionBreakdown: breakdown };
-  }, [payments, tenants, billingStatus, config]);
-
-  const currentMonthCommission = currentMonthRentPaid * 0.06;
+  const currentMonthRentPaid = commissionData?.totalRentCollected ?? 0;
+  const currentMonthCommission = commissionData?.totalCommission ?? 0;
+  const commissionRate = commissionData?.rate ?? 0;
+  const hasRequestedCommission = commissionData?.alreadyRequested ?? false;
 
   const currentMonthStr = format(new Date(), 'MMMM yyyy');
-  const hasRequestedCommission = useMemo(() => {
-    return expenses.some(e => e.type === 'COMMISSION' && e.description.includes(currentMonthStr));
-  }, [expenses, currentMonthStr]);
 
   const [requestingCommission, setRequestingCommission] = useState(false);
   const [showCommissionConfirm, setShowCommissionConfirm] = useState(false);
@@ -159,13 +68,9 @@ export default function AgentDashboard({ onLogout }: any) {
     setRequestingCommission(true);
     setCommissionMessage(null);
     try {
-      await api.expenses.create({
-        type: 'COMMISSION',
-        description: `Agent Commission for ${currentMonthStr}`,
-        amount: currentMonthCommission,
-        status: 'PENDING',
-        metadata: { month: currentMonthStr, breakdown: commissionBreakdown }
-      });
+      // No amount is sent — the server recomputes and owns the figure.
+      await api.agent.requestCommission();
+      await loadCommission();
       refresh();
       setCommissionMessage({ type: 'success', text: 'Commission request sent to Landlord!' });
     } catch (err: any) {
@@ -354,9 +259,13 @@ export default function AgentDashboard({ onLogout }: any) {
             <div className="text-3xl font-bold tracking-tighter">KSH {currentMonthRentPaid.toLocaleString()}</div>
           </Card>
           <Card className="p-6 relative">
-            <div className="text-zinc-500 text-sm font-semibold mb-2 uppercase tracking-tight">Agent Commission (6%) / {currentMonthStr}</div>
-            <div className="text-3xl font-bold tracking-tighter text-emerald-400 mb-4">KSH {currentMonthCommission.toLocaleString()}</div>
-            
+            <div className="text-zinc-500 text-sm font-semibold mb-2 uppercase tracking-tight">
+              Agent Commission {commissionRate > 0 ? `(${(commissionRate * 100).toFixed(0)}%)` : ''} / {currentMonthStr}
+            </div>
+            <div className="text-3xl font-bold tracking-tighter text-emerald-400 mb-4">
+              {commissionLoading ? <Loader2 className="h-6 w-6 animate-spin text-zinc-600" /> : `KSH ${currentMonthCommission.toLocaleString()}`}
+            </div>
+
             {hasRequestedCommission ? (
               <div className="text-sm font-bold text-emerald-500 flex items-center gap-2">
                 <Check className="h-4 w-4" /> Commission Request Logged
@@ -403,7 +312,7 @@ export default function AgentDashboard({ onLogout }: any) {
                           setShowCommissionConfirm(true);
                         }
                       }}
-                      disabled={currentMonthCommission === 0}
+                      disabled={commissionLoading || currentMonthCommission === 0}
                       className="bg-emerald-500 w-fit hover:bg-emerald-600 disabled:bg-zinc-800 disabled:text-zinc-600 text-white text-sm font-bold px-4 py-2 rounded-lg transition-colors flex items-center justify-center gap-2"
                     >
                       Request Commission Approval

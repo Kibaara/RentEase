@@ -9,6 +9,7 @@ import jwt from "jsonwebtoken";
 import crypto from "crypto";
 import { invoicingService } from "./src/services/invoicingService";
 import { auditService } from "./src/services/auditService";
+import { calculateAgentCommission, hasExistingCommissionRequest } from "./src/services/commissionService";
 
 // const auditService = { log: (e: any) => console.log("Audit log stub:", e.action), getLogs: (l=10, o=0) => [] };
 // const invoicingService = { initScheduledJobs: () => {}, generateMonthlyInvoices: () => ({}) };
@@ -390,6 +391,14 @@ async function startServer() {
   app.post("/api/expenses", requireAuth, isStaff, async (req: any, res) => {
     try {
       const { type, description, amount, unitNumber, requestId, tokens, reading, status, metadata } = req.body;
+
+      // COMMISSION expenses must go through /api/agent/commission/request, which
+      // computes the amount server-side. Blocking it here prevents an agent from
+      // bypassing that calculation and submitting an arbitrary self-reported amount.
+      if (type === 'COMMISSION') {
+        return res.status(400).json({ error: "Use /api/agent/commission/request to request commission." });
+      }
+
       const id = crypto.randomUUID();
       await db.prepare('INSERT INTO expenses (id, type, description, amount, "unitNumber", "requestId", tokens, reading, status, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
         .run(id, type, description, amount, unitNumber, requestId || null, tokens || null, reading || null, status || 'APPROVED', metadata ? JSON.stringify(metadata) : null);
@@ -427,6 +436,81 @@ async function startServer() {
       });
       res.json({ success: true });
     } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // --- AGENT COMMISSION ---
+  // The commission amount is ALWAYS computed here, never accepted from the client.
+  // See src/services/commissionService.ts for the calculation itself.
+
+  app.get("/api/agent/commission", requireAuth, isStaff, async (req: any, res) => {
+    try {
+      const month = req.query.month ? parseInt(req.query.month as string, 10) : undefined;
+      const year = req.query.year ? parseInt(req.query.year as string, 10) : undefined;
+
+      const result = await calculateAgentCommission(month, year);
+      const alreadyRequested = await hasExistingCommissionRequest(result.month, result.year);
+
+      res.json({ ...result, alreadyRequested });
+    } catch (e: any) {
+      console.error("Commission calculation error:", e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post("/api/agent/commission/request", requireAuth, isStaff, async (req: any, res) => {
+    try {
+      // Deliberately ignore any "amount" the client might send — only month/year
+      // (as a target period) are accepted as input; the figure is recomputed here.
+      const month = req.body?.month ? parseInt(req.body.month, 10) : undefined;
+      const year = req.body?.year ? parseInt(req.body.year, 10) : undefined;
+
+      const result = await calculateAgentCommission(month, year);
+
+      if (result.totalCommission <= 0) {
+        return res.status(400).json({ error: "No commission earned for this period yet." });
+      }
+
+      if (await hasExistingCommissionRequest(result.month, result.year)) {
+        return res.status(409).json({ error: "Commission for this period has already been requested." });
+      }
+
+      const id = crypto.randomUUID();
+      const periodLabel = new Date(result.year, result.month - 1, 1)
+        .toLocaleString("en-US", { month: "long", year: "numeric" });
+
+      await db.prepare(`
+        INSERT INTO expenses (id, type, description, amount, status, metadata)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(
+        id,
+        'COMMISSION',
+        `Agent Commission for ${periodLabel}`,
+        result.totalCommission,
+        'PENDING',
+        JSON.stringify({
+          month: result.month,
+          year: result.year,
+          rate: result.rate,
+          breakdown: result.breakdown,
+          requestedBy: req.user.id
+        })
+      );
+
+      await auditService.log({
+        userId: req.user.id,
+        userEmail: req.user.email,
+        action: 'REQUEST_COMMISSION',
+        entityType: 'EXPENSE',
+        entityId: id,
+        details: { month: result.month, year: result.year, amount: result.totalCommission },
+        ipAddress: req.ip
+      });
+
+      res.json({ success: true, id, amount: result.totalCommission });
+    } catch (e: any) {
+      console.error("Commission request error:", e);
       res.status(500).json({ error: e.message });
     }
   });
