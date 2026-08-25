@@ -121,6 +121,16 @@ async function startServer() {
       return res.status(403).json({ error: "Forbidden: Only staff can register new users." });
     }
 
+    // Only one AGENT account is supported. Enforced here (not just hidden in
+    // the UI) since commission requests are deduplicated per month/year
+    // globally, not per-agent — a second agent would silently break that.
+    if ((role || 'TENANT') === 'AGENT') {
+      const existingAgent = await db.prepare("SELECT id FROM users WHERE role = 'AGENT'").get();
+      if (existingAgent) {
+        return res.status(400).json({ error: "Only one agent account is allowed. Remove the existing agent before registering a new one." });
+      }
+    }
+
     const id = crypto.randomUUID();
     const hash = password ? bcrypt.hashSync(password, 10) : bcrypt.hashSync(Math.random().toString(36), 10);
     const parsedMoveInDate = moveInDate || new Date().toISOString();
@@ -379,6 +389,81 @@ async function startServer() {
       res.json({ success: true });
     } catch (e: any) {
       console.error("Error updating service request:", e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Move-out finalization used to be 6 separate sequential calls from the
+  // client (expense, 2 payments, service request, tenant, unit) with no
+  // rollback — a failure partway through could leave a refund payment
+  // recorded but the tenant never marked INACTIVE and the unit never freed.
+  // Doing it all in one transaction here makes it all-or-nothing.
+  app.post("/api/service-requests/:id/finalize-move-out", requireAuth, isStaff, async (req: any, res) => {
+    try {
+      const { id } = req.params;
+
+      const request = await db.prepare("SELECT * FROM service_requests WHERE id = ?").get(id) as any;
+      if (!request) return res.status(404).json({ error: "Service request not found" });
+      if (request.type !== 'MOVE_OUT') return res.status(400).json({ error: "Not a move-out request" });
+      if (request.status === 'RESOLVED') {
+        return res.status(409).json({ error: "This move-out request has already been finalized." });
+      }
+
+      const tenant = await db.prepare("SELECT * FROM users WHERE id = ?").get(request.tenantId) as any;
+      if (!tenant) return res.status(404).json({ error: "Tenant not found" });
+
+      const repairCosts = request.repairCosts || 0;
+      const refundAmount = request.refundAmount || 0;
+      const now = new Date().toISOString();
+
+      await db.transaction(async (client) => {
+        if (repairCosts > 0) {
+          await client.query(`
+            INSERT INTO expenses (id, type, description, amount, "unitNumber", "requestId")
+            VALUES ($1, $2, $3, $4, $5, $6)
+          `, [crypto.randomUUID(), 'REPAIR', `Move-out repairs for Unit ${tenant.unitNumber} (${tenant.name})`, repairCosts, tenant.unitNumber, request.id]);
+        }
+
+        await client.query(`
+          INSERT INTO payments (id, "tenantId", amount, "paymentType", "paymentMethod", "referenceCode", status, notes, "createdAt")
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        `, [crypto.randomUUID(), tenant.id, refundAmount, 'REFUND', 'SYSTEM', `REF-${request.id.slice(0, 5)}`, 'APPROVED', `Deposit refund for ${tenant.name}`, now]);
+
+        if (repairCosts > 0) {
+          await client.query(`
+            INSERT INTO payments (id, "tenantId", amount, "paymentType", "paymentMethod", "referenceCode", status, notes, "createdAt")
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          `, [crypto.randomUUID(), tenant.id, repairCosts, 'REPAIR_DEDUCTION', 'SYSTEM', `DED-${request.id.slice(0, 5)}`, 'APPROVED', `Repair deduction from deposit for ${tenant.name}`, now]);
+        }
+
+        await client.query('UPDATE service_requests SET status = $1, "landlordApprovedAt" = $2 WHERE id = $3', ['RESOLVED', now, request.id]);
+
+        await client.query(`
+          UPDATE users SET status = $1, "unitNumber" = NULL, "unitId" = NULL, "totalBalance" = $2,
+            "moveOutDate" = $3, "finalRefundAmount" = $4, "finalRepairCosts" = $5
+          WHERE id = $6
+        `, ['INACTIVE', 0, now, refundAmount, repairCosts, tenant.id]);
+
+        if (tenant.unitId) {
+          await client.query('UPDATE units SET status = $1, "currentTenantId" = NULL WHERE id = $2', ['VACANT', tenant.unitId]);
+        } else if (tenant.unitNumber) {
+          await client.query('UPDATE units SET status = $1, "currentTenantId" = NULL WHERE "unitNumber" = $2', ['VACANT', tenant.unitNumber]);
+        }
+      });
+
+      await auditService.log({
+        userId: req.user.id,
+        userEmail: req.user.email,
+        action: 'FINALIZE_MOVE_OUT',
+        entityType: 'SERVICE_REQUEST',
+        entityId: request.id,
+        details: { tenantId: tenant.id, repairCosts, refundAmount },
+        ipAddress: req.ip
+      });
+
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error("Finalize move-out error:", e);
       res.status(500).json({ error: e.message });
     }
   });
@@ -795,7 +880,46 @@ async function startServer() {
   app.patch("/api/users/:id", requireAuth, isStaff, async (req: any, res) => {
     try {
       const { id } = req.params;
-      const updates = req.body;
+      const updates = { ...req.body };
+
+      // A tenant's status being set to INACTIVE/EVICTED here (a direct status
+      // edit, distinct from the finalize-move-out flow) previously left the
+      // unit still marked occupied. Vacate it in the same transaction.
+      if (updates.status && ['INACTIVE', 'EVICTED'].includes(updates.status)) {
+        const existingUser = await db.prepare("SELECT * FROM users WHERE id = ?").get(id) as any;
+
+        if (existingUser && existingUser.role === 'TENANT') {
+          if (updates.unitId === undefined) updates.unitId = null;
+          if (updates.unitNumber === undefined) updates.unitNumber = null;
+
+          const keys = Object.keys(updates);
+          const setClause = keys.map((k, index) => `"${k}" = $${index + 1}`).join(", ");
+          const values = Object.values(updates).map(v => typeof v === 'boolean' ? v : (v === undefined ? null : v));
+
+          await db.transaction(async (client) => {
+            await client.query(`UPDATE users SET ${setClause} WHERE id = $${keys.length + 1}`, [...values, id]);
+
+            if (existingUser.unitId) {
+              await client.query('UPDATE units SET status = $1, "currentTenantId" = NULL WHERE id = $2', ['VACANT', existingUser.unitId]);
+            } else if (existingUser.unitNumber) {
+              await client.query('UPDATE units SET status = $1, "currentTenantId" = NULL WHERE "unitNumber" = $2', ['VACANT', existingUser.unitNumber]);
+            }
+          });
+
+          await auditService.log({
+            userId: req.user.id,
+            userEmail: req.user.email,
+            action: 'UPDATE_USER',
+            entityType: 'USER',
+            entityId: id,
+            details: { ...updates, vacatedUnit: true },
+            ipAddress: req.ip
+          });
+
+          return res.json({ success: true });
+        }
+      }
+
       const keys = Object.keys(updates);
       if (keys.length === 0) return res.json({ success: true });
       

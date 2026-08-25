@@ -60,6 +60,7 @@ export const api = {
     list: () => request('/service-requests'),
     create: (data: any) => request('/service-requests', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: string, data: any) => request(`/service-requests/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+    finalizeMoveOut: (id: string) => request(`/service-requests/${id}/finalize-move-out`, { method: 'POST' }),
   },
   expenses: {
     list: () => request('/expenses'),

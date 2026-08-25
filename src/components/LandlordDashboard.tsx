@@ -276,7 +276,7 @@ export default function LandlordDashboard({ onLogout }: any) {
             {activeTab === 'tenants' && <TenantsTab tenants={tenants} units={units} payments={payments} onRefresh={refresh} />}
             {activeTab === 'agents' && <AgentsTab agents={agents} onRefresh={refresh} />}
             {activeTab === 'expenses' && <ExpensesTab expenses={expenses} requests={requests} waterReadings={waterReadings} onRefresh={refresh} />}
-            {activeTab === 'payments' && <PaymentsTab payments={payments} tenants={tenants} units={units} />}
+            {activeTab === 'payments' && <PaymentsTab payments={payments} tenants={tenants} units={units} onRefresh={refresh} />}
             {activeTab === 'invoices' && <InvoicesTab tenants={tenants} onRefresh={refresh} />}
             {activeTab === 'reports' && <ReportsTab payments={payments} expenses={expenses} tenants={tenants} serviceRequests={requests} units={units} onRefresh={refresh} />}
             {activeTab === 'records' && <RecordsTab units={units} tenants={tenants} onRefresh={refresh} />}
@@ -966,73 +966,14 @@ function ReportsTab({ payments, expenses, tenants, serviceRequests, units, onRef
   const finalizeMoveOut = async (request: any) => {
     setProcessingId(request.id);
     try {
-      const tenant = tenants.find((t: any) => t.id === request.tenantId);
-      if (!tenant) return;
-
-      // 1. Record Repair Cost as Expense
-      if (request.repairCosts > 0) {
-        await api.expenses.create({
-          type: 'REPAIR',
-          description: `Move-out repairs for Unit ${tenant.unitNumber} (${tenant.name})`,
-          amount: request.repairCosts,
-          unitNumber: tenant.unitNumber,
-          requestId: request.id
-        });
-      }
-
-      // 2. Record Refund as a "payment" (excluded from revenue)
-      await api.payments.create({
-        tenantId: tenant.id,
-        amount: request.refundAmount,
-        paymentType: 'REFUND',
-        paymentMethod: 'SYSTEM',
-        status: 'APPROVED',
-        referenceCode: `REF-${request.id.slice(0, 5)}`,
-        notes: `Deposit refund for ${tenant.name}`
-      });
-
-      // 3. Record Repair Deduction as Revenue (to offset the expense)
-      if (request.repairCosts > 0) {
-        await api.payments.create({
-          tenantId: tenant.id,
-          amount: request.repairCosts,
-          paymentType: 'REPAIR_DEDUCTION',
-          paymentMethod: 'SYSTEM',
-          status: 'APPROVED',
-          referenceCode: `DED-${request.id.slice(0, 5)}`,
-          notes: `Repair deduction from deposit for ${tenant.name}`
-        });
-      }
-
-      // 4. Update Request to RESOLVED
-      await api.serviceRequests.update(request.id, { 
-        status: 'RESOLVED',
-        landlordApprovedAt: new Date().toISOString()
-      });
-
-      // 4. Update Tenant to INACTIVE and clear balances/deposits
-      await api.users.update(tenant.id, { 
-        status: 'INACTIVE', 
-        unitNumber: null,
-        unitId: null,
-        totalBalance: 0,
-        moveOutDate: new Date().toISOString(),
-        finalRefundAmount: request.refundAmount,
-        finalRepairCosts: request.repairCosts
-      });
-
-      // 5. Update Unit to VACANT
-      const unit = units.find((u: any) => u.id === tenant.unitId || u.unitNumber === tenant.unitNumber);
-      if (unit) {
-        await api.units.update(unit.id, { 
-          status: 'VACANT', 
-          currentTenantId: null 
-        });
-      }
-
+      // The server now performs the expense/payment/tenant/unit updates
+      // atomically in one transaction, so a failure partway through can't
+      // leave the tenant marked active with a refund already recorded.
+      await api.serviceRequests.finalizeMoveOut(request.id);
       onRefresh();
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
+      alert(`Failed to finalize move-out: ${e.message || 'Unknown error'}`);
     } finally {
       setProcessingId(null);
     }
@@ -1330,18 +1271,27 @@ function ReportsTab({ payments, expenses, tenants, serviceRequests, units, onRef
 function AgentsTab({ agents, onRefresh }: any) {
   const [showRegister, setShowRegister] = useState(false);
   const [editingAgent, setEditingAgent] = useState<any>(null);
+  const hasAgent = agents.length > 0;
 
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
-        <h3 className="text-xl font-bold">Property Agents</h3>
+        <h3 className="text-xl font-bold">Property Agent</h3>
         <button 
           onClick={() => setShowRegister(true)}
-          className="bg-zinc-100 text-zinc-950 px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 hover:bg-zinc-200 transition-all"
+          disabled={hasAgent}
+          title={hasAgent ? "Only one agent account is supported. Remove the existing agent to register a new one." : undefined}
+          className="bg-zinc-100 text-zinc-950 px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 hover:bg-zinc-200 transition-all disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-zinc-100"
         >
           <Plus className="h-4 w-4" /> Register Agent
         </button>
       </div>
+
+      {hasAgent && (
+        <div className="text-xs text-zinc-500 -mt-4">
+          Only one agent account is supported at a time. Remove the current agent below before registering a replacement.
+        </div>
+      )}
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
         {agents.map((agent: any) => (
@@ -1363,12 +1313,12 @@ function AgentsTab({ agents, onRefresh }: any) {
         ))}
         {agents.length === 0 && (
           <div className="col-span-full py-12 text-center text-zinc-500 italic">
-            No agents registered yet.
+            No agent registered yet.
           </div>
         )}
       </div>
 
-      {showRegister && <RegisterAgentModal onRefresh={onRefresh} onClose={() => setShowRegister(false)} />}
+      {showRegister && !hasAgent && <RegisterAgentModal onRefresh={onRefresh} onClose={() => setShowRegister(false)} />}
       {editingAgent && <EditAgentModal agent={editingAgent} onRefresh={onRefresh} onClose={() => setEditingAgent(null)} />}
     </div>
   );
@@ -1668,7 +1618,8 @@ function RecordsTab({ units, tenants, onRefresh }: any) {
             if (name) {
               const moveInDateParsed = parseDateStr(moveInDate, defaultMonth);
               const isMovedIn = new Date(moveInDateParsed) <= new Date();
-              const generatedEmail = email ? email.toString().toLowerCase() : `${name.toString().replace(/\s+/g, '').toLowerCase()}@tenant.com`;
+              const hasRealEmail = !!email;
+              const generatedEmail = hasRealEmail ? email.toString().toLowerCase() : `${name.toString().replace(/\s+/g, '').toLowerCase()}@tenant.com`;
 
               const tenantData = {
                 name: name.toString(),
@@ -1688,7 +1639,17 @@ function RecordsTab({ units, tenants, onRefresh }: any) {
                 status: 'ACTIVE'
               };
 
-              let tenant = currentTenants.find((t: any) => (t.email || '').toLowerCase() === generatedEmail);
+              // Without a real email, two different tenants who happen to
+              // share a name would generate the SAME fallback email and
+              // collide on the lookup below, silently overwriting one
+              // tenant's record with the other's data. Match by who
+              // currently occupies this unit instead in that case — a CSV
+              // row without an email is fundamentally "this unit's tenant",
+              // not "this email's tenant".
+              let tenant = hasRealEmail
+                ? currentTenants.find((t: any) => (t.email || '').toLowerCase() === generatedEmail)
+                : currentTenants.find((t: any) => t.status === 'ACTIVE' && (t.unitId === unit.id || (t.unitNumber || '').toLowerCase() === unit.unitNumber.toString().toLowerCase()));
+
               if (tenant) {
                 await api.users.update(tenant.id, tenantData);
               } else {
@@ -2450,7 +2411,7 @@ function generateChartData(payments: any[], expenses: any[]) {
   return last6Months;
 }
 
-function PaymentsTab({ payments, tenants, units }: any) {
+function PaymentsTab({ payments, tenants, units, onRefresh }: any) {
   const [searchTerm, setSearchTerm] = useState('');
   const [paymentTypeFilter, setPaymentTypeFilter] = useState('ALL');
   const [dateRange, setDateRange] = useState({ start: '', end: '' });
@@ -2465,8 +2426,9 @@ function PaymentsTab({ payments, tenants, units }: any) {
                           unitNumber.includes(searchTerm.toLowerCase()) || 
                           refCode.includes(searchTerm.toLowerCase());
       
-      const typeMatch = paymentTypeFilter === 'ALL' || p.paymentType === paymentTypeFilter;
-      
+      const typeMatch = paymentTypeFilter === 'ALL' || 
+        (paymentTypeFilter === 'RENT_OR_DEPOSIT' ? ['RENT', 'DEPOSIT'].includes(p.paymentType) : p.paymentType === paymentTypeFilter);
+
       let dateMatch = true;
       if (dateRange.start) {
         dateMatch = dateMatch && new Date(p.createdAt) >= new Date(dateRange.start);
@@ -2501,8 +2463,7 @@ function PaymentsTab({ payments, tenants, units }: any) {
     try {
       await api.payments.update(id, editForm);
       setEditingPayment(null);
-      // Wait for refresh
-      window.location.reload(); 
+      onRefresh();
     } catch (e: any) {
       alert("Error saving: " + e.message);
     }
@@ -2541,7 +2502,7 @@ function PaymentsTab({ payments, tenants, units }: any) {
             >
               <option value="ALL">All Types</option>
               <option value="RENT">Rent</option>
-              <option value="ALL">Rent & Deposit</option>
+              <option value="RENT_OR_DEPOSIT">Rent & Deposit</option>
               <option value="DEPOSIT">Deposit</option>
               <option value="WATER">Water</option>
               <option value="GARBAGE">Garbage</option>
