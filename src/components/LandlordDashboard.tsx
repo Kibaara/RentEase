@@ -62,6 +62,63 @@ export function sortUnitsChronologically(items: any[]) {
   });
 }
 
+// --- Shared CSV import helpers (used by RecordsTab's four import sections) ---
+
+export function parseCsvNumber(val: any): number {
+  if (!val) return 0;
+  return parseFloat(val.toString().replace(/,/g, '')) || 0;
+}
+
+export function parseCsvPaymentString(val: any): number {
+  if (!val || val === 'n/p') return 0;
+  const parts = val.toString().split('+');
+  return parts.reduce((sum: number, p: string) => sum + parseCsvNumber(p), 0);
+}
+
+export function parseCsvDate(dateStr: any, fallbackMonth?: string): string {
+  if (!dateStr) {
+    if (fallbackMonth) return new Date(`${fallbackMonth}-01`).toISOString();
+    return new Date().toISOString();
+  }
+  const str = dateStr.toString();
+  const parts = str.includes('/') ? str.split('/') : str.split('-');
+  if (parts.length === 3) {
+    let day, month, year;
+    if (str.includes('/')) {
+      // Assuming DD/MM/YYYY from CSV
+      day = parseInt(parts[0], 10);
+      month = parseInt(parts[1], 10) - 1;
+      year = parseInt(parts[2], 10);
+    } else {
+      // YYYY-MM-DD
+      year = parseInt(parts[0], 10);
+      month = parseInt(parts[1], 10) - 1;
+      day = parseInt(parts[2], 10);
+    }
+    if (year < 100) year += 2000;
+    const d = new Date(year, month, day);
+    if (!isNaN(d.getTime())) return d.toISOString();
+  }
+  return new Date(str).toISOString();
+}
+
+// Normalizes a raw Papa.parse row into lowercased, trimmed lookup keys,
+// while preserving original-case values for display fields like names.
+export function normalizeCsvRow(rawRow: any): any {
+  const row: any = {};
+  for (const key in rawRow) {
+    row[key.toLowerCase().trim()] = typeof rawRow[key] === 'string' ? rawRow[key].trim().toLowerCase() : rawRow[key];
+  }
+  return row;
+}
+
+export interface ImportRowResult {
+  row: number;
+  label: string;
+  status: 'created' | 'updated' | 'error';
+  message?: string;
+}
+
 export default function LandlordDashboard({ onLogout }: any) {
   const [activeTab, setActiveTab] = useState('overview');
   const [isCollapsed, setIsCollapsed] = useState(window.innerWidth < 768);
@@ -279,7 +336,7 @@ export default function LandlordDashboard({ onLogout }: any) {
             {activeTab === 'payments' && <PaymentsTab payments={payments} tenants={tenants} units={units} onRefresh={refresh} />}
             {activeTab === 'invoices' && <InvoicesTab tenants={tenants} onRefresh={refresh} />}
             {activeTab === 'reports' && <ReportsTab payments={payments} expenses={expenses} tenants={tenants} serviceRequests={requests} units={units} onRefresh={refresh} />}
-            {activeTab === 'records' && <RecordsTab units={units} tenants={tenants} onRefresh={refresh} />}
+            {activeTab === 'records' && <RecordsTab units={units} tenants={tenants} expenses={expenses} onRefresh={refresh} />}
             {activeTab === 'audit' && <AuditLogsTab />}
           </motion.div>
         </AnimatePresence>
@@ -727,6 +784,7 @@ function TenantsTab({ tenants, units, onRefresh }: any) {
 function ExpensesTab({ expenses, requests, waterReadings, onRefresh }: any) {
   const tenantReadings = waterReadings.filter((r: any) => r.type === 'TENANT');
   const [selectedCommission, setSelectedCommission] = useState<any>(null);
+  const [showAddExpense, setShowAddExpense] = useState(false);
 
   const handleApproveCommission = async (id: string) => {
     try {
@@ -742,9 +800,17 @@ function ExpensesTab({ expenses, requests, waterReadings, onRefresh }: any) {
     <div className="grid gap-12 lg:grid-cols-3">
       <div className="lg:col-span-2 space-y-12">
         <section className="space-y-6">
-          <h3 className="text-xl font-bold flex items-center gap-2">
-            <Receipt className="h-5 w-5 text-zinc-400" /> General Expense History
-          </h3>
+          <div className="flex justify-between items-center">
+            <h3 className="text-xl font-bold flex items-center gap-2">
+              <Receipt className="h-5 w-5 text-zinc-400" /> General Expense History
+            </h3>
+            <button
+              onClick={() => setShowAddExpense(true)}
+              className="bg-zinc-100 text-zinc-950 px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 hover:bg-zinc-200 transition-all"
+            >
+              <Plus className="h-4 w-4" /> Add Expense
+            </button>
+          </div>
           <div className="bg-zinc-900 border border-zinc-900 rounded-xl overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse min-w-[600px]">
@@ -847,6 +913,86 @@ function ExpensesTab({ expenses, requests, waterReadings, onRefresh }: any) {
           onApprove={() => handleApproveCommission(selectedCommission.id)} 
         />
       )}
+      {showAddExpense && (
+        <AddExpenseModal onClose={() => setShowAddExpense(false)} onRefresh={onRefresh} />
+      )}
+    </div>
+  );
+}
+
+const MANUAL_EXPENSE_TYPES = ['CLEANING', 'ELECTRICITY', 'WATER', 'MAINTENANCE', 'REPAIR', 'OTHER'];
+
+function AddExpenseModal({ onClose, onRefresh }: any) {
+  const [type, setType] = useState('CLEANING');
+  const [description, setDescription] = useState('');
+  const [amount, setAmount] = useState('');
+  const [unitNumber, setUnitNumber] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const parsedAmount = parseFloat(amount);
+    if (!parsedAmount || parsedAmount <= 0) {
+      setError('Enter a valid amount');
+      return;
+    }
+    setLoading(true);
+    setError('');
+    try {
+      await api.expenses.create({
+        type,
+        description: description || `${type.charAt(0)}${type.slice(1).toLowerCase()} expense`,
+        amount: parsedAmount,
+        unitNumber: unitNumber || undefined,
+        status: 'APPROVED',
+      });
+      onRefresh();
+      onClose();
+    } catch (err: any) {
+      setError(err.message || 'Failed to add expense');
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+      <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="bg-zinc-950 border border-zinc-800 rounded-2xl w-full max-w-md">
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          <div className="flex justify-between items-center">
+            <h3 className="text-lg font-bold">Add Expense</h3>
+            <button type="button" onClick={onClose} className="text-zinc-500 hover:text-zinc-300"><X className="h-5 w-5" /></button>
+          </div>
+
+          {error && <div className="p-3 bg-red-500/10 text-red-500 rounded border border-red-500/20 text-sm font-semibold">{error}</div>}
+
+          <div className="space-y-2">
+            <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Type</label>
+            <select value={type} onChange={e => setType(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm text-zinc-100">
+              {MANUAL_EXPENSE_TYPES.map(t => <option key={t} value={t}>{t.charAt(0) + t.slice(1).toLowerCase()}</option>)}
+            </select>
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Description</label>
+            <input value={description} onChange={e => setDescription(e.target.value)} placeholder="e.g. Common area cleaning" className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm text-zinc-100 placeholder:text-zinc-600" />
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Amount (KSH)</label>
+            <input type="number" step="0.01" value={amount} onChange={e => setAmount(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm text-zinc-100" />
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Unit (optional)</label>
+            <input value={unitNumber} onChange={e => setUnitNumber(e.target.value)} placeholder="If this expense relates to a specific unit" className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm text-zinc-100 placeholder:text-zinc-600" />
+          </div>
+
+          <button type="submit" disabled={loading} className="w-full bg-zinc-100 text-zinc-950 py-3 rounded-lg text-sm font-bold hover:bg-zinc-200 transition-all disabled:opacity-50 flex items-center justify-center gap-2">
+            {loading && <Loader2 className="h-4 w-4 animate-spin" />} Add Expense
+          </button>
+        </form>
+      </motion.div>
     </div>
   );
 }
@@ -891,6 +1037,12 @@ function ReportsTab({ payments, expenses, tenants, serviceRequests, units, onRef
 
   const filteredExpenses = useMemo(() => {
     const filtered = expenses.filter((e: any) => {
+      // Match revenue's treatment of only-approved payments: a PENDING
+      // expense (e.g. a commission request awaiting landlord approval)
+      // isn't a realized cost yet and shouldn't count against profit.
+      const isApproved = (e.status || 'APPROVED') === 'APPROVED';
+      if (!isApproved) return false;
+
       const unitNumber = (e.unitNumber || '').toLowerCase();
       const searchMatch = !searchTerm || unitNumber.includes(searchTerm.toLowerCase()) || 
                           (e.description || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -1034,11 +1186,73 @@ function ReportsTab({ payments, expenses, tenants, serviceRequests, units, onRef
   
   const revenueByType = revenueByTypeRaw.filter(item => item.value > 0);
 
+  const handleExportPdf = () => {
+    const monthLabel = format(new Date(`${reportMonth}-01`), 'MMMM yyyy');
+    const expenseRows = filteredExpenses.map((e: any) =>
+      `<tr><td>${format(new Date(e.createdAt), 'dd MMM yyyy')}</td><td>${e.type}</td><td>${e.description || ''}</td><td>${e.unitNumber || '-'}</td><td style="text-align:right">KSH ${e.amount.toLocaleString()}</td></tr>`
+    ).join('');
+    const paymentRows = filteredPayments.map((p: any) =>
+      `<tr><td>${format(new Date(p.createdAt), 'dd MMM yyyy')}</td><td>${p.unitNumber || '-'}</td><td>${p.paymentType}</td><td style="text-align:right">KSH ${p.amount.toLocaleString()}</td></tr>`
+    ).join('');
+
+    const html = `
+      <html>
+        <head>
+          <title>Financial Report - ${monthLabel}</title>
+          <style>
+            body { font-family: -apple-system, Arial, sans-serif; color: #18181b; padding: 32px; }
+            h1 { font-size: 20px; margin-bottom: 4px; }
+            .subtitle { color: #71717a; font-size: 13px; margin-bottom: 24px; }
+            .summary { display: flex; gap: 24px; margin-bottom: 32px; }
+            .summary div { border: 1px solid #e4e4e7; border-radius: 8px; padding: 12px 16px; flex: 1; }
+            .summary .label { font-size: 10px; text-transform: uppercase; color: #71717a; letter-spacing: 0.05em; }
+            .summary .value { font-size: 18px; font-weight: 700; margin-top: 4px; }
+            h2 { font-size: 14px; margin-top: 32px; margin-bottom: 8px; border-bottom: 1px solid #e4e4e7; padding-bottom: 4px; }
+            table { width: 100%; border-collapse: collapse; font-size: 12px; }
+            th { text-align: left; color: #71717a; font-weight: 600; padding: 6px 4px; border-bottom: 1px solid #e4e4e7; }
+            td { padding: 6px 4px; border-bottom: 1px solid #f4f4f5; }
+            @media print { body { padding: 0; } }
+          </style>
+        </head>
+        <body>
+          <h1>Financial Report</h1>
+          <div class="subtitle">${monthLabel}</div>
+          <div class="summary">
+            <div><div class="label">Revenue</div><div class="value">KSH ${totalRevenue.toLocaleString()}</div></div>
+            <div><div class="label">Expenses</div><div class="value">KSH ${totalExpenses.toLocaleString()}</div></div>
+            <div><div class="label">Net Profit</div><div class="value">KSH ${netProfit.toLocaleString()}</div></div>
+          </div>
+          <h2>Payments (${filteredPayments.length})</h2>
+          <table>
+            <thead><tr><th>Date</th><th>Unit</th><th>Type</th><th style="text-align:right">Amount</th></tr></thead>
+            <tbody>${paymentRows || '<tr><td colspan="4">No payments this period.</td></tr>'}</tbody>
+          </table>
+          <h2>Expenses (${filteredExpenses.length})</h2>
+          <table>
+            <thead><tr><th>Date</th><th>Type</th><th>Description</th><th>Unit</th><th style="text-align:right">Amount</th></tr></thead>
+            <tbody>${expenseRows || '<tr><td colspan="5">No expenses this period.</td></tr>'}</tbody>
+          </table>
+        </body>
+      </html>
+    `;
+
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+      alert('Please allow pop-ups to export the report.');
+      return;
+    }
+    printWindow.document.write(html);
+    printWindow.document.close();
+    printWindow.onload = () => {
+      printWindow.print();
+    };
+  };
+
   return (
     <div className="space-y-8">
       <div className="flex justify-between items-center">
         <h3 className="text-xl font-bold">Financial Reports</h3>
-        <button className="bg-zinc-900 border border-zinc-800 px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 hover:bg-zinc-800 transition-all">
+        <button onClick={handleExportPdf} className="bg-zinc-900 border border-zinc-800 px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 hover:bg-zinc-800 transition-all">
           <Download className="h-4 w-4" /> Export PDF
         </button>
       </div>
@@ -1162,6 +1376,7 @@ function ReportsTab({ payments, expenses, tenants, serviceRequests, units, onRef
                   { name: 'Electricity', value: filteredExpenses.filter((e: any) => e.type === 'ELECTRICITY').reduce((sum: number, e: any) => sum + e.amount, 0), color: '#eab308' },
                   { name: 'Water', value: filteredExpenses.filter((e: any) => e.type === 'WATER').reduce((sum: number, e: any) => sum + e.amount, 0), color: '#06b6d4' },
                   { name: 'Maintenance', value: filteredExpenses.filter((e: any) => e.type === 'MAINTENANCE').reduce((sum: number, e: any) => sum + e.amount, 0), color: '#f97316' },
+                  { name: 'Repairs', value: filteredExpenses.filter((e: any) => e.type === 'REPAIR').reduce((sum: number, e: any) => sum + e.amount, 0), color: '#ef4444' },
                   { name: 'Commission', value: filteredExpenses.filter((e: any) => e.type === 'COMMISSION').reduce((sum: number, e: any) => sum + e.amount, 0), color: '#10b981' },
                   { name: 'Other', value: filteredExpenses.filter((e: any) => e.type === 'OTHER').reduce((sum: number, e: any) => sum + e.amount, 0), color: '#a855f7' },
                 ]}
@@ -1189,6 +1404,7 @@ function ReportsTab({ payments, expenses, tenants, serviceRequests, units, onRef
                     { name: 'Electricity', color: '#eab308' },
                     { name: 'Water', color: '#06b6d4' },
                     { name: 'Maintenance', color: '#f97316' },
+                    { name: 'Repairs', color: '#ef4444' },
                     { name: 'Commission', color: '#10b981' },
                     { name: 'Other', color: '#a855f7' },
                   ].map((entry, index) => (
@@ -1502,197 +1718,246 @@ function RegisterAgentModal({ onClose, onRefresh }: any) {
   );
 }
 
-function RecordsTab({ units, tenants, onRefresh }: any) {
+function ImportResultsSummary({ results }: { results: ImportRowResult[] }) {
+  const created = results.filter(r => r.status === 'created').length;
+  const updated = results.filter(r => r.status === 'updated').length;
+  const errors = results.filter(r => r.status === 'error');
+
+  return (
+    <div className="space-y-3">
+      <div className="flex gap-4 text-sm">
+        <span className="text-emerald-500 font-semibold">{created} created</span>
+        <span className="text-blue-400 font-semibold">{updated} updated</span>
+        <span className={errors.length > 0 ? "text-red-500 font-semibold" : "text-zinc-600"}>{errors.length} failed</span>
+      </div>
+      {errors.length > 0 && (
+        <div className="max-h-48 overflow-y-auto space-y-1 bg-red-500/5 border border-red-500/20 rounded-lg p-3">
+          {errors.map((r, i) => (
+            <div key={i} className="text-xs text-red-400">
+              Row {r.row} ({r.label}): {r.message}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RecordsTab({ units, tenants, expenses, onRefresh }: any) {
+  const [section, setSection] = useState<'tenants' | 'water' | 'expenses' | 'payments' | 'danger'>('tenants');
+
+  const sections = [
+    { id: 'tenants', label: 'Tenants & Units' },
+    { id: 'water', label: 'Water Readings' },
+    { id: 'expenses', label: 'Expenses' },
+    { id: 'payments', label: 'Payments' },
+    { id: 'danger', label: 'Danger Zone' },
+  ] as const;
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h3 className="text-xl font-bold">Bulk Import & Records</h3>
+        <p className="text-sm text-zinc-500">Upload CSV files to bulk-create or update records.</p>
+      </div>
+
+      <div className="flex gap-2 border-b border-zinc-800 pb-px overflow-x-auto">
+        {sections.map(s => (
+          <button
+            key={s.id}
+            onClick={() => setSection(s.id)}
+            className={`px-4 py-2 text-sm font-semibold whitespace-nowrap rounded-t-lg transition-colors ${
+              section === s.id
+                ? (s.id === 'danger' ? 'text-red-500 border-b-2 border-red-500' : 'text-zinc-100 border-b-2 border-zinc-100')
+                : 'text-zinc-500 hover:text-zinc-300'
+            }`}
+          >
+            {s.label}
+          </button>
+        ))}
+      </div>
+
+      {section === 'tenants' && <TenantImportSection units={units} tenants={tenants} onRefresh={onRefresh} />}
+      {section === 'water' && <WaterReadingsImportSection units={units} tenants={tenants} onRefresh={onRefresh} />}
+      {section === 'expenses' && <ExpensesImportSection onRefresh={onRefresh} />}
+      {section === 'payments' && <PaymentsImportSection tenants={tenants} expenses={expenses} onRefresh={onRefresh} />}
+      {section === 'danger' && <DangerZoneSection />}
+    </div>
+  );
+}
+
+function TenantImportSection({ units, tenants, onRefresh }: any) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
   const [defaultMonth, setDefaultMonth] = useState(format(new Date(), 'yyyy-MM'));
-  const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [preview, setPreview] = useState<any[] | null>(null);
+  const [results, setResults] = useState<ImportRowResult[] | null>(null);
 
-  const parseNumber = (val: string) => {
-    if (!val) return 0;
-    return parseFloat(val.toString().replace(/,/g, '')) || 0;
-  };
+  const parseRow = (rawRow: any, index: number) => {
+    const row = normalizeCsvRow(rawRow);
 
-  const parsePaymentString = (val: string) => {
-    if (!val || val === 'n/p') return 0;
-    const parts = val.toString().split('+');
-    return parts.reduce((sum, p) => sum + parseNumber(p), 0);
-  };
+    const unitNumber = row['unitnumber'] || row['unit no.'] || row['unit no'] || row['unit'];
+    const nameObj = rawRow['name'] || rawRow['Tenant Name'] || row['tenant name'] || row['name'];
+    const name = nameObj ? nameObj.toString().toUpperCase() : '';
+    const email = row['email'] || row['email address'];
+    const phone = row['phone'] || row['phone number'];
+    const moveInDate = row['moveindate'] || row['date of occupation'];
+    const rentAmountObj = row['rentamount'] || row['rent amount'] || row['rent'];
+    const depositAmount = row['depositamount'] || row['deposit amount'];
+    const pastPayments = row['pastpaymentsamount'] || row['payments'];
+    const totalBalance = row['totalbalance'] || row['balance'];
+    const entryDate = row['pastpaymentdate'] || row['entry date'];
 
-  const parseDateStr = (dateStr: string, fallbackMonth: string) => {
-    if (!dateStr) {
-      if (fallbackMonth) {
-        return new Date(`${fallbackMonth}-01`).toISOString();
-      }
-      return new Date().toISOString();
+    if (!unitNumber) {
+      return { index, valid: false, reason: 'Missing unit number', unitNumber, name };
     }
-    const parts = dateStr.includes('/') ? dateStr.split('/') : dateStr.split('-');
-    if (parts.length === 3) {
-       let day, month, year;
-       if (dateStr.includes('/')) {
-         // Assuming DD/MM/YYYY from CSV
-         day = parseInt(parts[0], 10);
-         month = parseInt(parts[1], 10) - 1;
-         year = parseInt(parts[2], 10);
-       } else {
-         // YYYY-MM-DD
-         year = parseInt(parts[0], 10);
-         month = parseInt(parts[1], 10) - 1;
-         day = parseInt(parts[2], 10);
-       }
-       if (year < 100) year += 2000;
-       const d = new Date(year, month, day);
-       if (!isNaN(d.getTime())) return d.toISOString();
-    }
-    return new Date(dateStr).toISOString();
+
+    const existingUnit = units.find((u: any) => (u.unitNumber || '').toLowerCase() === unitNumber.toString().toLowerCase());
+    const hasRealEmail = !!email;
+    const generatedEmail = hasRealEmail ? email.toString().toLowerCase() : `${(name || 'tenant').replace(/\s+/g, '').toLowerCase()}@tenant.com`;
+
+    const existingTenant = hasRealEmail
+      ? tenants.find((t: any) => (t.email || '').toLowerCase() === generatedEmail)
+      : tenants.find((t: any) => t.status === 'ACTIVE' && ((existingUnit && t.unitId === existingUnit.id) || (t.unitNumber || '').toLowerCase() === unitNumber.toString().toLowerCase()));
+
+    return {
+      index,
+      valid: true,
+      unitNumber: unitNumber.toString(),
+      unitAction: existingUnit ? 'use existing' : 'create',
+      name,
+      tenantAction: name ? (existingTenant ? 'update' : 'create') : 'skip (no name)',
+      generatedEmail,
+      hasRealEmail,
+      phone,
+      moveInDate,
+      rentAmountObj,
+      depositAmount,
+      pastPayments,
+      totalBalance,
+      entryDate,
+      existingTenantId: existingTenant?.id,
+    };
   };
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
-    setLoading(true);
     setError('');
-    setSuccess('');
+    setResults(null);
+    setLoading(true);
 
     Papa.parse(file, {
       header: true,
       skipEmptyLines: true,
-      complete: async (results) => {
+      complete: (parseResults) => {
         try {
-          const rows = results.data as any[];
-          let processed = 0;
-          let currentTenants = [...tenants];
-          let currentUnits = [...units];
-
-          for (const rawRow of rows) {
-            const row: any = {};
-            for (const key in rawRow) {
-              row[key.toLowerCase().trim()] = typeof rawRow[key] === 'string' ? rawRow[key].trim().toLowerCase() : rawRow[key];
-            }
-
-            const unitNumber = row['unitnumber'] || row['unit no.'] || row['unit no'] || row['unit'];
-            const nameObj = rawRow['name'] || rawRow['Tenant Name'] || row['tenant name'] || row['name']; // keep original case for display
-            const name = nameObj ? nameObj.toString().toUpperCase() : ''; 
-            const email = row['email'] || row['email address'];
-            const phone = row['phone'] || row['phone number'];
-            const moveInDate = row['moveindate'] || row['date of occupation'];
-            const rentAmountObj = row['rentamount'] || row['rent amount'] || row['rent'];
-            const depositAmount = row['depositamount'] || row['deposit amount'];
-            const payments = row['pastpaymentsamount'] || row['payments made in april 2026'] || row['payments'];
-            const totalBalance = row['totalbalance'] || row['balance at end of april'] || row['balance'];
-            const entryDate = row['pastpaymentdate'] || row['entry date'];
-
-            if (!unitNumber) continue;
-            
-            // Check if unit exists
-            let unit = currentUnits.find((u: any) => (u.unitNumber || '').toLowerCase() === unitNumber.toString().toLowerCase());
-            
-            let rentEst = 10000;
-            if (rentAmountObj) {
-              rentEst = parseNumber(rentAmountObj);
-            } else if (depositAmount) {
-              rentEst = parseNumber(depositAmount);
-            }
-            
-            if (!unit) {
-              // Create unit if not exists
-              const newUnitData = {
-                unitNumber: unitNumber.toString(),
-                type: '1 Bedroom', // Default type
-                rentAmount: rentEst,
-                waterReading: 0,
-                status: 'VACANT',
-                isActive: 1
-              };
-              const createRes = await api.units.create(newUnitData);
-              unit = { ...newUnitData, id: createRes.id };
-              currentUnits.push(unit);
-            } else if (rentAmountObj && parseNumber(rentAmountObj) !== unit.rentAmount) {
-              // Update unit rent amount if provided in CSV
-              await api.units.update(unit.id, { rentAmount: rentEst });
-              unit.rentAmount = rentEst;
-            }
-
-            if (name) {
-              const moveInDateParsed = parseDateStr(moveInDate, defaultMonth);
-              const isMovedIn = new Date(moveInDateParsed) <= new Date();
-              const hasRealEmail = !!email;
-              const generatedEmail = hasRealEmail ? email.toString().toLowerCase() : `${name.toString().replace(/\s+/g, '').toLowerCase()}@tenant.com`;
-
-              const tenantData = {
-                name: name.toString(),
-                email: generatedEmail,
-                phone: phone ? phone.toString() : '',
-                role: 'TENANT',
-                unitNumber: unit.unitNumber,
-                unitId: unit.id,
-                rentAmount: unit.rentAmount,
-                totalBalance: parseNumber(totalBalance),
-                depositAmount: parseNumber(depositAmount),
-                waterReading: unit.waterReading || 0,
-                waterBill: 0,
-                garbageFee: 0,
-                isMovedIn: isMovedIn,
-                moveInDate: moveInDateParsed,
-                status: 'ACTIVE'
-              };
-
-              // Without a real email, two different tenants who happen to
-              // share a name would generate the SAME fallback email and
-              // collide on the lookup below, silently overwriting one
-              // tenant's record with the other's data. Match by who
-              // currently occupies this unit instead in that case — a CSV
-              // row without an email is fundamentally "this unit's tenant",
-              // not "this email's tenant".
-              let tenant = hasRealEmail
-                ? currentTenants.find((t: any) => (t.email || '').toLowerCase() === generatedEmail)
-                : currentTenants.find((t: any) => t.status === 'ACTIVE' && (t.unitId === unit.id || (t.unitNumber || '').toLowerCase() === unit.unitNumber.toString().toLowerCase()));
-
-              if (tenant) {
-                await api.users.update(tenant.id, tenantData);
-              } else {
-                tenant = await api.auth.register(tenantData);
-                currentTenants.push(tenant);
-              }
-
-              await api.units.update(unit.id, { 
-                status: 'OCCUPIED',
-                currentTenantId: tenant.id
-              });
-              
-              const paymentAmount = parsePaymentString(payments);
-              if (paymentAmount > 0) {
-                await api.payments.create({
-                  tenantId: tenant.id,
-                  amount: paymentAmount,
-                  paymentType: 'GENERAL',
-                  paymentMethod: 'SYSTEM',
-                  referenceCode: `IMPORTED_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
-                  status: 'APPROVED',
-                  notes: `Imported past payment for ${defaultMonth}`,
-                  createdAt: parseDateStr(entryDate, defaultMonth)
-                });
-              }
-            }
-            processed++;
-          }
-          setSuccess(`Successfully imported and processed ${processed} records.`);
-          onRefresh();
+          const rows = (parseResults.data as any[]).map((r, i) => parseRow(r, i));
+          setPreview(rows);
         } catch (err: any) {
-          console.error(err);
-          setError(err.message || 'Failed to process CSV file');
+          setError(err.message || 'Failed to parse CSV file');
         } finally {
           setLoading(false);
         }
       },
-      error: (error) => {
-        console.error(error);
-        setError(error.message);
+      error: (err) => {
+        setError(err.message);
         setLoading(false);
       }
     });
+  };
+
+  const confirmImport = async () => {
+    if (!preview) return;
+    setLoading(true);
+    const rowResults: ImportRowResult[] = [];
+    let currentTenants = [...tenants];
+    let currentUnits = [...units];
+
+    for (const row of preview) {
+      const label = row.name || row.unitNumber || `row ${row.index + 1}`;
+      if (!row.valid) {
+        rowResults.push({ row: row.index + 1, label, status: 'error', message: row.reason });
+        continue;
+      }
+      try {
+        let unit = currentUnits.find((u: any) => (u.unitNumber || '').toLowerCase() === row.unitNumber.toLowerCase());
+        let rentEst = 10000;
+        if (row.rentAmountObj) rentEst = parseCsvNumber(row.rentAmountObj);
+        else if (row.depositAmount) rentEst = parseCsvNumber(row.depositAmount);
+
+        if (!unit) {
+          const newUnitData = { unitNumber: row.unitNumber, type: '1 Bedroom', rentAmount: rentEst, waterReading: 0, status: 'VACANT', isActive: 1 };
+          const createRes = await api.units.create(newUnitData);
+          unit = { ...newUnitData, id: createRes.id };
+          currentUnits.push(unit);
+        } else if (row.rentAmountObj && parseCsvNumber(row.rentAmountObj) !== unit.rentAmount) {
+          await api.units.update(unit.id, { rentAmount: rentEst });
+          unit.rentAmount = rentEst;
+        }
+
+        if (!row.name) {
+          rowResults.push({ row: row.index + 1, label, status: 'created', message: 'Unit only (no tenant name given)' });
+          continue;
+        }
+
+        const moveInDateParsed = parseCsvDate(row.moveInDate, defaultMonth);
+        const isMovedIn = new Date(moveInDateParsed) <= new Date();
+
+        const tenantData = {
+          name: row.name,
+          email: row.generatedEmail,
+          phone: row.phone ? row.phone.toString() : '',
+          role: 'TENANT',
+          unitNumber: unit.unitNumber,
+          unitId: unit.id,
+          rentAmount: unit.rentAmount,
+          totalBalance: parseCsvNumber(row.totalBalance),
+          depositAmount: parseCsvNumber(row.depositAmount),
+          waterReading: unit.waterReading || 0,
+          waterBill: 0,
+          garbageFee: 0,
+          isMovedIn,
+          moveInDate: moveInDateParsed,
+          status: 'ACTIVE'
+        };
+
+        let tenant = row.existingTenantId ? currentTenants.find((t: any) => t.id === row.existingTenantId) : null;
+        let wasUpdate = !!tenant;
+        if (tenant) {
+          await api.users.update(tenant.id, tenantData);
+        } else {
+          tenant = await api.auth.register(tenantData);
+          currentTenants.push(tenant);
+        }
+
+        await api.units.update(unit.id, { status: 'OCCUPIED', currentTenantId: tenant.id });
+
+        const paymentAmount = parseCsvPaymentString(row.pastPayments);
+        if (paymentAmount > 0) {
+          await api.payments.create({
+            tenantId: tenant.id,
+            amount: paymentAmount,
+            paymentType: 'GENERAL',
+            paymentMethod: 'SYSTEM',
+            referenceCode: `IMPORTED_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+            status: 'APPROVED',
+            notes: `Imported past payment for ${defaultMonth}`,
+            createdAt: parseCsvDate(row.entryDate, defaultMonth)
+          });
+        }
+
+        rowResults.push({ row: row.index + 1, label, status: wasUpdate ? 'updated' : 'created' });
+      } catch (rowErr: any) {
+        // Isolated per row — one bad row doesn't abort the rest of the batch.
+        rowResults.push({ row: row.index + 1, label, status: 'error', message: rowErr.message || 'Unknown error' });
+      }
+    }
+
+    setResults(rowResults);
+    setPreview(null);
+    setLoading(false);
+    onRefresh();
   };
 
   const downloadTemplate = () => {
@@ -1701,123 +1966,777 @@ function RecordsTab({ units, tenants, onRefresh }: any) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'system_initialization_template.csv';
+    a.download = 'tenants_import_template.csv';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   };
 
+  const validCount = preview?.filter(r => r.valid).length || 0;
+  const invalidCount = (preview?.length || 0) - validCount;
+
   return (
-    <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <div>
-          <h3 className="text-xl font-bold">System Initialization & Records</h3>
-          <p className="text-sm text-zinc-500">Upload bulk records to create units and tenants simultaneously.</p>
-        </div>
-      </div>
-      
-      <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-8 w-full max-w-2xl space-y-6">
-        <div className="space-y-4">
-          <div className="p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-lg text-sm text-emerald-400">
-            <p className="font-semibold mb-1">How it works:</p>
-            <ul className="list-disc pl-4 space-y-1 text-xs text-emerald-500/80">
-              <li>If a <strong>Unit no.</strong> doesn't exist, it will be automatically created.</li>
-              <li>If a <strong>Tenant Name</strong> is provided, they will be assigned.</li>
-              <li>Past payments are automatically parsed.</li>
-              <li>Dates in the CSV like <strong>DD/MM/YYYY</strong> are supported.</li>
-            </ul>
-          </div>
-
-          <div className="space-y-2">
-            <label className="text-sm font-bold text-zinc-400 uppercase block">Default Month / Context</label>
-            <input 
-              type="month" 
-              value={defaultMonth}
-              onChange={(e) => setDefaultMonth(e.target.value)}
-              className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-3 focus:outline-none focus:ring-1 focus:ring-zinc-700" 
-            />
-            <p className="text-xs text-zinc-500">This month is used if specific payment dates are missing from the CSV.</p>
-          </div>
-
-          <button 
-            type="button"
-            onClick={downloadTemplate}
-            className="w-full bg-zinc-800 text-zinc-300 border border-zinc-700 py-3 rounded-lg text-sm font-semibold hover:bg-zinc-700 transition-colors flex items-center justify-center gap-2"
-          >
-            <Download className="h-4 w-4" /> Download Example CSV Template
-          </button>
-
-          {error && <div className="p-3 bg-red-500/10 text-red-500 rounded border border-red-500/20 text-sm font-semibold">{error}</div>}
-          {success && <div className="p-3 bg-emerald-500/10 text-emerald-500 rounded border border-emerald-500/20 text-sm font-semibold">{success}</div>}
-
-          <div className="space-y-2 mt-8">
-            <label className="text-sm font-bold text-zinc-400 uppercase block">Upload CSV File</label>
-            <label className="flex flex-col items-center justify-center w-full h-40 px-4 transition bg-zinc-950 border-2 border-zinc-800 border-dashed rounded-xl appearance-none cursor-pointer hover:border-zinc-600 focus:outline-none">
-              <span className="flex flex-col items-center space-y-2">
-                <Database className="w-8 h-8 text-zinc-600" />
-                <span className="font-medium text-zinc-500">
-                  {loading ? 'Processing initialization...' : 'Click to Browse or Drag & Drop'}
-                </span>
-                <span className="text-xs text-zinc-600">.csv files only</span>
-              </span>
-              <input type="file" accept=".csv" className="hidden" disabled={loading} onChange={handleFileUpload} />
-            </label>
-          </div>
-        </div>
+    <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-8 w-full max-w-3xl space-y-6">
+      <div className="p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-lg text-sm text-emerald-400">
+        <p className="font-semibold mb-1">How it works:</p>
+        <ul className="list-disc pl-4 space-y-1 text-xs text-emerald-500/80">
+          <li>If a <strong>Unit no.</strong> doesn't exist, it will be automatically created.</li>
+          <li>If a <strong>Tenant Name</strong> is provided, they will be assigned.</li>
+          <li>Past payments are automatically parsed.</li>
+          <li>Dates in the CSV like <strong>DD/MM/YYYY</strong> are supported.</li>
+          <li>You'll see a preview before anything is written — nothing is imported until you confirm.</li>
+        </ul>
       </div>
 
-      <div className="bg-red-950/10 border border-red-900/50 rounded-xl p-8 w-full max-w-2xl space-y-6 mt-8">
+      <div className="space-y-2">
+        <label className="text-sm font-bold text-zinc-400 uppercase block">Default Month / Context</label>
+        <input
+          type="month"
+          value={defaultMonth}
+          onChange={(e) => setDefaultMonth(e.target.value)}
+          className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-3 focus:outline-none focus:ring-1 focus:ring-zinc-700"
+        />
+        <p className="text-xs text-zinc-500">This month is used if specific payment dates are missing from the CSV.</p>
+      </div>
+
+      <button
+        type="button"
+        onClick={downloadTemplate}
+        className="w-full bg-zinc-800 text-zinc-300 border border-zinc-700 py-3 rounded-lg text-sm font-semibold hover:bg-zinc-700 transition-colors flex items-center justify-center gap-2"
+      >
+        <Download className="h-4 w-4" /> Download Example CSV Template
+      </button>
+
+      {error && <div className="p-3 bg-red-500/10 text-red-500 rounded border border-red-500/20 text-sm font-semibold">{error}</div>}
+
+      {!preview && !results && (
+        <div className="space-y-2 mt-4">
+          <label className="text-sm font-bold text-zinc-400 uppercase block">Upload CSV File</label>
+          <label className="flex flex-col items-center justify-center w-full h-40 px-4 transition bg-zinc-950 border-2 border-zinc-800 border-dashed rounded-xl appearance-none cursor-pointer hover:border-zinc-600 focus:outline-none">
+            <span className="flex flex-col items-center space-y-2">
+              <Database className="w-8 h-8 text-zinc-600" />
+              <span className="font-medium text-zinc-500">{loading ? 'Parsing...' : 'Click to Browse or Drag & Drop'}</span>
+              <span className="text-xs text-zinc-600">.csv files only</span>
+            </span>
+            <input type="file" accept=".csv" className="hidden" disabled={loading} onChange={handleFileSelect} />
+          </label>
+        </div>
+      )}
+
+      {preview && (
         <div className="space-y-4">
-          <div>
-            <h4 className="text-lg font-bold text-red-500 flex items-center gap-2">
-              <AlertCircle className="w-5 h-5" /> Danger Zone
-            </h4>
-            <p className="text-sm text-zinc-400 mt-1">
-              Resetting the system will permanently delete all units, tenants, payments, service requests, expenses, and logs. This action cannot be undone. Only your landlord account will remain.
-            </p>
-          </div>
-          {!showResetConfirm ? (
-            <button
-              onClick={() => setShowResetConfirm(true)}
-              disabled={loading}
-              className="w-full sm:w-auto bg-red-500/10 text-red-500 border border-red-500/50 px-6 py-3 rounded-lg text-sm font-semibold hover:bg-red-500/20 transition-colors flex items-center justify-center gap-2"
-            >
-              <Trash2 className="w-4 h-4" /> Reset Entire System
-            </button>
-          ) : (
-            <div className="space-y-4 p-4 rounded-lg border border-red-500/30 bg-red-500/5">
-              <p className="text-sm font-bold text-red-500">Are you ABSOLUTELY sure? ALL data will be lost!</p>
-              <div className="flex gap-4">
-                <button
-                  onClick={async () => {
-                    setLoading(true);
-                    try {
-                      await api.admin.resetSystem();
-                      setSuccess("System successfully reset.");
-                      setShowResetConfirm(false);
-                      setTimeout(() => window.location.reload(), 1500);
-                    } catch (e: any) {
-                      setError(e.message || "Failed to reset system");
-                      setLoading(false);
-                    }
-                  }}
-                  disabled={loading}
-                  className="bg-red-500 hover:bg-red-600 text-white px-6 py-2 rounded-lg text-sm font-bold flex items-center gap-2"
-                >
-                  {loading ? 'Resetting...' : 'Yes, Delete Everything'}
-                </button>
-                <button
-                  onClick={() => setShowResetConfirm(false)}
-                  disabled={loading}
-                  className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-4 py-2 rounded-lg text-sm font-semibold"
-                >
-                  Cancel
-                </button>
-              </div>
+          <div className="flex items-center justify-between">
+            <div className="text-sm">
+              <span className="text-zinc-300 font-semibold">{preview.length} rows parsed</span>
+              {invalidCount > 0 && <span className="text-red-500 ml-2">({invalidCount} will fail — missing unit number)</span>}
             </div>
-          )}
+            <div className="flex gap-2">
+              <button onClick={() => setPreview(null)} className="px-4 py-2 rounded-lg text-sm font-semibold bg-zinc-800 text-zinc-300 hover:bg-zinc-700">Cancel</button>
+              <button onClick={confirmImport} disabled={loading || validCount === 0} className="px-4 py-2 rounded-lg text-sm font-semibold bg-emerald-500 text-white hover:bg-emerald-600 disabled:opacity-50 flex items-center gap-2">
+                {loading && <Loader2 className="h-4 w-4 animate-spin" />} Confirm Import ({validCount} rows)
+              </button>
+            </div>
+          </div>
+          <div className="max-h-80 overflow-y-auto border border-zinc-800 rounded-lg">
+            <table className="w-full text-left text-xs">
+              <thead className="sticky top-0 bg-zinc-950">
+                <tr className="text-zinc-500 uppercase tracking-widest">
+                  <th className="px-3 py-2">Row</th>
+                  <th className="px-3 py-2">Unit</th>
+                  <th className="px-3 py-2">Tenant</th>
+                  <th className="px-3 py-2">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-zinc-900">
+                {preview.map((r) => (
+                  <tr key={r.index} className={!r.valid ? 'text-red-500' : 'text-zinc-300'}>
+                    <td className="px-3 py-2">{r.index + 1}</td>
+                    <td className="px-3 py-2">{r.unitNumber || '—'}</td>
+                    <td className="px-3 py-2">{r.name || '—'}</td>
+                    <td className="px-3 py-2">
+                      {!r.valid ? r.reason : `${r.unitAction} unit, ${r.tenantAction} tenant`}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
+      )}
+
+      {results && (
+        <div className="space-y-4">
+          <ImportResultsSummary results={results} />
+          <button onClick={() => setResults(null)} className="px-4 py-2 rounded-lg text-sm font-semibold bg-zinc-800 text-zinc-300 hover:bg-zinc-700">Import Another File</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WaterReadingsImportSection({ units, tenants, onRefresh }: any) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [config, setConfig] = useState<any>(null);
+  const [importMonth, setImportMonth] = useState(format(new Date(), 'yyyy-MM'));
+  const [preview, setPreview] = useState<any[] | null>(null);
+  const [results, setResults] = useState<ImportRowResult[] | null>(null);
+
+  useEffect(() => { api.config.get().then(setConfig).catch(() => {}); }, []);
+
+  const parseRow = (rawRow: any, index: number) => {
+    const row = normalizeCsvRow(rawRow);
+    const unitNumber = row['unitnumber'] || row['unit'] || row['unit no'];
+    const presentReadingRaw = row['presentreading'] || row['present reading'] || row['reading'];
+    const rateRaw = row['rate'];
+    const readingDate = row['readingdate'] || row['date'];
+
+    if (!unitNumber) return { index, valid: false, reason: 'Missing unit number' };
+    if (presentReadingRaw === undefined || presentReadingRaw === '') return { index, valid: false, reason: 'Missing present reading', unitNumber };
+
+    const unit = units.find((u: any) => (u.unitNumber || '').toLowerCase() === unitNumber.toString().toLowerCase());
+    if (!unit) return { index, valid: false, reason: `Unit "${unitNumber}" not found`, unitNumber };
+
+    const tenant = tenants.find((t: any) => t.status === 'ACTIVE' && (t.unitId === unit.id || t.unitNumber === unit.unitNumber));
+    const previousReading = unit.waterReading || 0;
+    const presentReading = parseCsvNumber(presentReadingRaw);
+    const rate = rateRaw ? parseCsvNumber(rateRaw) : (config?.waterRate || 100);
+    const consumption = Math.max(0, presentReading - previousReading);
+    const amount = consumption * rate;
+
+    if (presentReading < previousReading) {
+      return { index, valid: false, reason: `Present (${presentReading}) is less than previous (${previousReading})`, unitNumber };
+    }
+
+    return {
+      index, valid: true, unitNumber: unit.unitNumber, unitId: unit.id,
+      tenantId: tenant?.id, tenantName: tenant?.name || '(no active tenant)',
+      previousReading, presentReading, rate, consumption, amount,
+      // A per-row date column always wins; otherwise every row in this
+      // batch falls back to the selected Import Month rather than "now" —
+      // essential for backfilling a past month's readings.
+      readingDate: parseCsvDate(readingDate, importMonth),
+    };
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setError(''); setResults(null); setLoading(true);
+    Papa.parse(file, {
+      header: true, skipEmptyLines: true,
+      complete: (parseResults) => {
+        try {
+          setPreview((parseResults.data as any[]).map((r, i) => parseRow(r, i)));
+        } catch (err: any) {
+          setError(err.message || 'Failed to parse CSV file');
+        } finally { setLoading(false); }
+      },
+      error: (err) => { setError(err.message); setLoading(false); }
+    });
+  };
+
+  const confirmImport = async () => {
+    if (!preview) return;
+    setLoading(true);
+    const validRows = preview.filter(r => r.valid);
+    try {
+      const { results: apiResults } = await api.waterReadings.bulkImport(validRows.map((r: any) => ({
+        tenantId: r.tenantId, unitNumber: r.unitNumber, type: 'TENANT',
+        previousReading: r.previousReading, presentReading: r.presentReading,
+        consumption: r.consumption, rate: r.rate, amount: r.amount, createdAt: r.readingDate,
+      })));
+
+      const rowResults: ImportRowResult[] = preview.map((r) => {
+        if (!r.valid) return { row: r.index + 1, label: r.unitNumber || `row ${r.index + 1}`, status: 'error', message: r.reason };
+        const idx = validRows.indexOf(r);
+        const apiResult = apiResults[idx];
+        return apiResult?.success
+          ? { row: r.index + 1, label: r.unitNumber, status: 'created' }
+          : { row: r.index + 1, label: r.unitNumber, status: 'error', message: apiResult?.error || 'Unknown error' };
+      });
+
+      setResults(rowResults);
+      setPreview(null);
+      onRefresh();
+    } catch (err: any) {
+      setError(err.message || 'Bulk import failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const downloadTemplate = () => {
+    const template = 'unitNumber,presentReading,rate,readingDate\nA1,145,100,01/08/2026';
+    const blob = new Blob([template], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'water_readings_import_template.csv';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const validCount = preview?.filter(r => r.valid).length || 0;
+  const invalidCount = (preview?.length || 0) - validCount;
+
+  return (
+    <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-8 w-full max-w-3xl space-y-6">
+      <div className="p-4 bg-cyan-500/10 border border-cyan-500/20 rounded-lg text-sm text-cyan-400">
+        <p className="font-semibold mb-1">How it works:</p>
+        <ul className="list-disc pl-4 space-y-1 text-xs text-cyan-500/80">
+          <li>Previous reading is looked up automatically from each unit's current reading.</li>
+          <li>Rate defaults to the property's configured water rate if not given in the CSV.</li>
+          <li>Rows without a readingDate column use the Import Month below — set it to the past month you're backfilling.</li>
+          <li>This does NOT auto-generate invoices — use "Generate Invoices" once you're ready, since these readings may be backfilled for a past period.</li>
+        </ul>
+      </div>
+
+      <div className="space-y-2">
+        <label className="text-sm font-bold text-zinc-400 uppercase block">Import Month</label>
+        <input
+          type="month"
+          value={importMonth}
+          onChange={(e) => setImportMonth(e.target.value)}
+          className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-3 focus:outline-none focus:ring-1 focus:ring-zinc-700"
+        />
+        <p className="text-xs text-zinc-500">Used for any row that doesn't specify its own readingDate — set this to the month you're backfilling.</p>
+      </div>
+
+      <button type="button" onClick={downloadTemplate} className="w-full bg-zinc-800 text-zinc-300 border border-zinc-700 py-3 rounded-lg text-sm font-semibold hover:bg-zinc-700 transition-colors flex items-center justify-center gap-2">
+        <Download className="h-4 w-4" /> Download Example CSV Template
+      </button>
+
+      {error && <div className="p-3 bg-red-500/10 text-red-500 rounded border border-red-500/20 text-sm font-semibold">{error}</div>}
+
+      {!preview && !results && (
+        <div className="space-y-2 mt-4">
+          <label className="flex flex-col items-center justify-center w-full h-40 px-4 transition bg-zinc-950 border-2 border-zinc-800 border-dashed rounded-xl appearance-none cursor-pointer hover:border-zinc-600 focus:outline-none">
+            <span className="flex flex-col items-center space-y-2">
+              <Droplets className="w-8 h-8 text-zinc-600" />
+              <span className="font-medium text-zinc-500">{loading ? 'Parsing...' : 'Click to Browse or Drag & Drop'}</span>
+              <span className="text-xs text-zinc-600">.csv files only</span>
+            </span>
+            <input type="file" accept=".csv" className="hidden" disabled={loading} onChange={handleFileSelect} />
+          </label>
+        </div>
+      )}
+
+      {preview && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="text-sm">
+              <span className="text-zinc-300 font-semibold">{preview.length} rows parsed</span>
+              {invalidCount > 0 && <span className="text-red-500 ml-2">({invalidCount} will be skipped)</span>}
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => setPreview(null)} className="px-4 py-2 rounded-lg text-sm font-semibold bg-zinc-800 text-zinc-300 hover:bg-zinc-700">Cancel</button>
+              <button onClick={confirmImport} disabled={loading || validCount === 0} className="px-4 py-2 rounded-lg text-sm font-semibold bg-emerald-500 text-white hover:bg-emerald-600 disabled:opacity-50 flex items-center gap-2">
+                {loading && <Loader2 className="h-4 w-4 animate-spin" />} Confirm Import ({validCount} rows)
+              </button>
+            </div>
+          </div>
+          <div className="max-h-80 overflow-y-auto border border-zinc-800 rounded-lg">
+            <table className="w-full text-left text-xs">
+              <thead className="sticky top-0 bg-zinc-950">
+                <tr className="text-zinc-500 uppercase tracking-widest">
+                  <th className="px-3 py-2">Row</th>
+                  <th className="px-3 py-2">Unit</th>
+                  <th className="px-3 py-2">Tenant</th>
+                  <th className="px-3 py-2">Prev → Present</th>
+                  <th className="px-3 py-2">Amount</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-zinc-900">
+                {preview.map((r) => (
+                  <tr key={r.index} className={!r.valid ? 'text-red-500' : 'text-zinc-300'}>
+                    <td className="px-3 py-2">{r.index + 1}</td>
+                    <td className="px-3 py-2">{r.unitNumber || '—'}</td>
+                    <td className="px-3 py-2">{r.valid ? r.tenantName : (r.reason)}</td>
+                    <td className="px-3 py-2">{r.valid ? `${r.previousReading} → ${r.presentReading}` : '—'}</td>
+                    <td className="px-3 py-2">{r.valid ? `KSH ${r.amount.toLocaleString()}` : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {results && (
+        <div className="space-y-4">
+          <ImportResultsSummary results={results} />
+          <button onClick={() => setResults(null)} className="px-4 py-2 rounded-lg text-sm font-semibold bg-zinc-800 text-zinc-300 hover:bg-zinc-700">Import Another File</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const EXPENSE_IMPORT_TYPES = ['CLEANING', 'ELECTRICITY', 'WATER', 'MAINTENANCE', 'REPAIR', 'OTHER'];
+
+function ExpensesImportSection({ onRefresh }: any) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [importMonth, setImportMonth] = useState(format(new Date(), 'yyyy-MM'));
+  const [preview, setPreview] = useState<any[] | null>(null);
+  const [results, setResults] = useState<ImportRowResult[] | null>(null);
+
+  const parseRow = (rawRow: any, index: number) => {
+    const row = normalizeCsvRow(rawRow);
+    const date = row['date'];
+    const typeRaw = (row['type'] || '').toString().toUpperCase();
+    const description = rawRow['description'] || rawRow['Description'] || row['description'] || '';
+    const amountRaw = row['amount'];
+    const unitNumber = row['unitnumber'] || row['unit'];
+
+    if (!EXPENSE_IMPORT_TYPES.includes(typeRaw)) {
+      return { index, valid: false, reason: `Unrecognized type "${typeRaw || '(blank)'}" — must be one of ${EXPENSE_IMPORT_TYPES.join(', ')}` };
+    }
+    const amount = parseCsvNumber(amountRaw);
+    if (amount <= 0) return { index, valid: false, reason: 'Amount must be greater than 0', type: typeRaw };
+
+    return {
+      index, valid: true, type: typeRaw, description: description.toString(),
+      amount, unitNumber: unitNumber ? unitNumber.toString() : undefined,
+      // A per-row date column always wins; otherwise every row in this
+      // batch falls back to the selected Import Month rather than "now".
+      date: parseCsvDate(date, importMonth),
+    };
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setError(''); setResults(null); setLoading(true);
+    Papa.parse(file, {
+      header: true, skipEmptyLines: true,
+      complete: (parseResults) => {
+        try {
+          setPreview((parseResults.data as any[]).map((r, i) => parseRow(r, i)));
+        } catch (err: any) {
+          setError(err.message || 'Failed to parse CSV file');
+        } finally { setLoading(false); }
+      },
+      error: (err) => { setError(err.message); setLoading(false); }
+    });
+  };
+
+  const confirmImport = async () => {
+    if (!preview) return;
+    setLoading(true);
+    const rowResults: ImportRowResult[] = [];
+    for (const row of preview) {
+      const label = row.type ? `${row.type} - ${row.description || ''}`.trim() : `row ${row.index + 1}`;
+      if (!row.valid) {
+        rowResults.push({ row: row.index + 1, label, status: 'error', message: row.reason });
+        continue;
+      }
+      try {
+        await api.expenses.create({
+          type: row.type,
+          description: row.description || `Imported ${row.type.toLowerCase()} expense`,
+          amount: row.amount,
+          unitNumber: row.unitNumber,
+          status: 'APPROVED',
+          createdAt: row.date,
+        });
+        rowResults.push({ row: row.index + 1, label, status: 'created' });
+      } catch (rowErr: any) {
+        rowResults.push({ row: row.index + 1, label, status: 'error', message: rowErr.message || 'Unknown error' });
+      }
+    }
+    setResults(rowResults);
+    setPreview(null);
+    setLoading(false);
+    onRefresh();
+  };
+
+  const downloadTemplate = () => {
+    const template = 'date,type,description,amount,unitNumber\n01/08/2026,CLEANING,Common area cleaning,3000,';
+    const blob = new Blob([template], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'expenses_import_template.csv';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const validCount = preview?.filter(r => r.valid).length || 0;
+  const invalidCount = (preview?.length || 0) - validCount;
+
+  return (
+    <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-8 w-full max-w-3xl space-y-6">
+      <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-lg text-sm text-amber-400">
+        <p className="font-semibold mb-1">How it works:</p>
+        <ul className="list-disc pl-4 space-y-1 text-xs text-amber-500/80">
+          <li>Type must be one of: {EXPENSE_IMPORT_TYPES.join(', ')}.</li>
+          <li>Rows without a date column use the Import Month below — set it to the past month you're backfilling.</li>
+          <li>Imported expenses are marked Approved — this is for your own historical records, not requests awaiting review.</li>
+          <li>Commission expenses can't be bulk-imported — those must go through the agent's request flow.</li>
+        </ul>
+      </div>
+
+      <div className="space-y-2">
+        <label className="text-sm font-bold text-zinc-400 uppercase block">Import Month</label>
+        <input
+          type="month"
+          value={importMonth}
+          onChange={(e) => setImportMonth(e.target.value)}
+          className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-3 focus:outline-none focus:ring-1 focus:ring-zinc-700"
+        />
+        <p className="text-xs text-zinc-500">Used for any row that doesn't specify its own date — set this to the month you're backfilling.</p>
+      </div>
+
+      <button type="button" onClick={downloadTemplate} className="w-full bg-zinc-800 text-zinc-300 border border-zinc-700 py-3 rounded-lg text-sm font-semibold hover:bg-zinc-700 transition-colors flex items-center justify-center gap-2">
+        <Download className="h-4 w-4" /> Download Example CSV Template
+      </button>
+
+      {error && <div className="p-3 bg-red-500/10 text-red-500 rounded border border-red-500/20 text-sm font-semibold">{error}</div>}
+
+      {!preview && !results && (
+        <div className="space-y-2 mt-4">
+          <label className="flex flex-col items-center justify-center w-full h-40 px-4 transition bg-zinc-950 border-2 border-zinc-800 border-dashed rounded-xl appearance-none cursor-pointer hover:border-zinc-600 focus:outline-none">
+            <span className="flex flex-col items-center space-y-2">
+              <Receipt className="w-8 h-8 text-zinc-600" />
+              <span className="font-medium text-zinc-500">{loading ? 'Parsing...' : 'Click to Browse or Drag & Drop'}</span>
+              <span className="text-xs text-zinc-600">.csv files only</span>
+            </span>
+            <input type="file" accept=".csv" className="hidden" disabled={loading} onChange={handleFileSelect} />
+          </label>
+        </div>
+      )}
+
+      {preview && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="text-sm">
+              <span className="text-zinc-300 font-semibold">{preview.length} rows parsed</span>
+              {invalidCount > 0 && <span className="text-red-500 ml-2">({invalidCount} will fail)</span>}
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => setPreview(null)} className="px-4 py-2 rounded-lg text-sm font-semibold bg-zinc-800 text-zinc-300 hover:bg-zinc-700">Cancel</button>
+              <button onClick={confirmImport} disabled={loading || validCount === 0} className="px-4 py-2 rounded-lg text-sm font-semibold bg-emerald-500 text-white hover:bg-emerald-600 disabled:opacity-50 flex items-center gap-2">
+                {loading && <Loader2 className="h-4 w-4 animate-spin" />} Confirm Import ({validCount} rows)
+              </button>
+            </div>
+          </div>
+          <div className="max-h-80 overflow-y-auto border border-zinc-800 rounded-lg">
+            <table className="w-full text-left text-xs">
+              <thead className="sticky top-0 bg-zinc-950">
+                <tr className="text-zinc-500 uppercase tracking-widest">
+                  <th className="px-3 py-2">Row</th>
+                  <th className="px-3 py-2">Type</th>
+                  <th className="px-3 py-2">Description</th>
+                  <th className="px-3 py-2">Amount</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-zinc-900">
+                {preview.map((r) => (
+                  <tr key={r.index} className={!r.valid ? 'text-red-500' : 'text-zinc-300'}>
+                    <td className="px-3 py-2">{r.index + 1}</td>
+                    <td className="px-3 py-2">{r.type || '—'}</td>
+                    <td className="px-3 py-2">{r.valid ? (r.description || '—') : r.reason}</td>
+                    <td className="px-3 py-2">{r.valid ? `KSH ${r.amount.toLocaleString()}` : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {results && (
+        <div className="space-y-4">
+          <ImportResultsSummary results={results} />
+          <button onClick={() => setResults(null)} className="px-4 py-2 rounded-lg text-sm font-semibold bg-zinc-800 text-zinc-300 hover:bg-zinc-700">Import Another File</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const PAYMENT_IMPORT_TYPES = ['RENT', 'WATER', 'GARBAGE', 'DEPOSIT', 'MOVE_IN', 'GENERAL'];
+
+function PaymentsImportSection({ tenants, expenses, onRefresh }: any) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [importMonth, setImportMonth] = useState(format(new Date(), 'yyyy-MM'));
+  const [preview, setPreview] = useState<any[] | null>(null);
+  const [results, setResults] = useState<ImportRowResult[] | null>(null);
+
+  // Months that already have a commission request on file — importing a
+  // payment dated into one of these will change that period's commission
+  // total the next time it's viewed, since commission is computed live.
+  const commissionPeriods = useMemo(() => {
+    const periods = new Set<string>();
+    (expenses || []).filter((e: any) => e.type === 'COMMISSION').forEach((e: any) => {
+      try {
+        const meta = typeof e.metadata === 'string' ? JSON.parse(e.metadata) : e.metadata;
+        if (meta?.month && meta?.year) periods.add(`${meta.year}-${String(meta.month).padStart(2, '0')}`);
+      } catch {}
+    });
+    return periods;
+  }, [expenses]);
+
+  const parseRow = (rawRow: any, index: number) => {
+    const row = normalizeCsvRow(rawRow);
+    const unitNumber = row['unitnumber'] || row['unit'];
+    const email = row['email'];
+    const amountRaw = row['amount'];
+    const typeRaw = (row['paymenttype'] || row['type'] || '').toString().toUpperCase();
+    const paymentMethod = (row['paymentmethod'] || row['method'] || 'SYSTEM').toString().toUpperCase();
+    const referenceCode = row['referencecode'] || row['reference'];
+    const date = row['date'];
+    const notes = rawRow['notes'] || rawRow['Notes'] || row['notes'];
+
+    if (!unitNumber && !email) return { index, valid: false, reason: 'Missing unit number or email' };
+    if (!PAYMENT_IMPORT_TYPES.includes(typeRaw)) {
+      return { index, valid: false, reason: `Unrecognized type "${typeRaw || '(blank)'}" — must be one of ${PAYMENT_IMPORT_TYPES.join(', ')}` };
+    }
+    const amount = parseCsvNumber(amountRaw);
+    if (amount <= 0) return { index, valid: false, reason: 'Amount must be greater than 0' };
+
+    const tenant = email
+      ? tenants.find((t: any) => (t.email || '').toLowerCase() === email.toString().toLowerCase())
+      : tenants.find((t: any) => (t.unitNumber || '').toLowerCase() === unitNumber.toString().toLowerCase());
+
+    if (!tenant) return { index, valid: false, reason: `No tenant found for ${email || unitNumber}` };
+
+    // A per-row date column always wins; otherwise every row in this batch
+    // falls back to the selected Import Month rather than "now" — this also
+    // matters for the commission-period check right below, which would
+    // otherwise always compare against today's date for undated rows.
+    const parsedDate = parseCsvDate(date, importMonth);
+    const period = format(new Date(parsedDate), 'yyyy-MM');
+    const commissionWarning = commissionPeriods.has(period)
+      ? `Commission for ${format(new Date(parsedDate), 'MMMM yyyy')} has already been requested — this payment will change that total.`
+      : undefined;
+
+    return {
+      index, valid: true, tenantId: tenant.id, tenantName: tenant.name, unitNumber: tenant.unitNumber,
+      amount, paymentType: typeRaw, paymentMethod, referenceCode, notes: notes ? notes.toString() : undefined,
+      date: parsedDate, commissionWarning,
+    };
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setError(''); setResults(null); setLoading(true);
+    Papa.parse(file, {
+      header: true, skipEmptyLines: true,
+      complete: (parseResults) => {
+        try {
+          setPreview((parseResults.data as any[]).map((r, i) => parseRow(r, i)));
+        } catch (err: any) {
+          setError(err.message || 'Failed to parse CSV file');
+        } finally { setLoading(false); }
+      },
+      error: (err) => { setError(err.message); setLoading(false); }
+    });
+  };
+
+  const confirmImport = async () => {
+    if (!preview) return;
+    setLoading(true);
+    const rowResults: ImportRowResult[] = [];
+    for (const row of preview) {
+      const label = row.tenantName || row.unitNumber || `row ${row.index + 1}`;
+      if (!row.valid) {
+        rowResults.push({ row: row.index + 1, label, status: 'error', message: row.reason });
+        continue;
+      }
+      try {
+        await api.payments.create({
+          tenantId: row.tenantId,
+          amount: row.amount,
+          paymentType: row.paymentType,
+          paymentMethod: row.paymentMethod,
+          referenceCode: row.referenceCode || `IMPORTED_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+          status: 'APPROVED',
+          notes: row.notes || `Imported payment`,
+          createdAt: row.date,
+        });
+        rowResults.push({ row: row.index + 1, label, status: 'created' });
+      } catch (rowErr: any) {
+        rowResults.push({ row: row.index + 1, label, status: 'error', message: rowErr.message || 'Unknown error' });
+      }
+    }
+    setResults(rowResults);
+    setPreview(null);
+    setLoading(false);
+    onRefresh();
+  };
+
+  const downloadTemplate = () => {
+    const template = 'unitNumber,email,amount,paymentType,paymentMethod,referenceCode,date,notes\nA1,,15000,RENT,M-PESA,,01/08/2026,';
+    const blob = new Blob([template], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'payments_import_template.csv';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const validCount = preview?.filter(r => r.valid).length || 0;
+  const invalidCount = (preview?.length || 0) - validCount;
+  const warningCount = preview?.filter(r => r.valid && r.commissionWarning).length || 0;
+
+  return (
+    <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-8 w-full max-w-3xl space-y-6">
+      <div className="p-4 bg-blue-500/10 border border-blue-500/20 rounded-lg text-sm text-blue-400">
+        <p className="font-semibold mb-1">How it works:</p>
+        <ul className="list-disc pl-4 space-y-1 text-xs text-blue-500/80">
+          <li>Match a tenant by <strong>unitNumber</strong> or <strong>email</strong> — the tenant must already exist.</li>
+          <li>Type must be one of: {PAYMENT_IMPORT_TYPES.join(', ')}.</li>
+          <li>Rows without a date column use the Import Month below — set it to the past month you're backfilling.</li>
+          <li>Imported payments are marked Approved.</li>
+          <li>Rows dated into a month whose commission has already been requested will be flagged — importing will change that total.</li>
+        </ul>
+      </div>
+
+      <div className="space-y-2">
+        <label className="text-sm font-bold text-zinc-400 uppercase block">Import Month</label>
+        <input
+          type="month"
+          value={importMonth}
+          onChange={(e) => setImportMonth(e.target.value)}
+          className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-3 focus:outline-none focus:ring-1 focus:ring-zinc-700"
+        />
+        <p className="text-xs text-zinc-500">Used for any row that doesn't specify its own date — set this to the month you're backfilling.</p>
+      </div>
+
+      <button type="button" onClick={downloadTemplate} className="w-full bg-zinc-800 text-zinc-300 border border-zinc-700 py-3 rounded-lg text-sm font-semibold hover:bg-zinc-700 transition-colors flex items-center justify-center gap-2">
+        <Download className="h-4 w-4" /> Download Example CSV Template
+      </button>
+
+      {error && <div className="p-3 bg-red-500/10 text-red-500 rounded border border-red-500/20 text-sm font-semibold">{error}</div>}
+
+      {!preview && !results && (
+        <div className="space-y-2 mt-4">
+          <label className="flex flex-col items-center justify-center w-full h-40 px-4 transition bg-zinc-950 border-2 border-zinc-800 border-dashed rounded-xl appearance-none cursor-pointer hover:border-zinc-600 focus:outline-none">
+            <span className="flex flex-col items-center space-y-2">
+              <CreditCard className="w-8 h-8 text-zinc-600" />
+              <span className="font-medium text-zinc-500">{loading ? 'Parsing...' : 'Click to Browse or Drag & Drop'}</span>
+              <span className="text-xs text-zinc-600">.csv files only</span>
+            </span>
+            <input type="file" accept=".csv" className="hidden" disabled={loading} onChange={handleFileSelect} />
+          </label>
+        </div>
+      )}
+
+      {preview && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="text-sm">
+              <span className="text-zinc-300 font-semibold">{preview.length} rows parsed</span>
+              {invalidCount > 0 && <span className="text-red-500 ml-2">({invalidCount} will fail)</span>}
+              {warningCount > 0 && <span className="text-amber-500 ml-2">({warningCount} affect an already-requested commission period)</span>}
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => setPreview(null)} className="px-4 py-2 rounded-lg text-sm font-semibold bg-zinc-800 text-zinc-300 hover:bg-zinc-700">Cancel</button>
+              <button onClick={confirmImport} disabled={loading || validCount === 0} className="px-4 py-2 rounded-lg text-sm font-semibold bg-emerald-500 text-white hover:bg-emerald-600 disabled:opacity-50 flex items-center gap-2">
+                {loading && <Loader2 className="h-4 w-4 animate-spin" />} Confirm Import ({validCount} rows)
+              </button>
+            </div>
+          </div>
+          <div className="max-h-80 overflow-y-auto border border-zinc-800 rounded-lg">
+            <table className="w-full text-left text-xs">
+              <thead className="sticky top-0 bg-zinc-950">
+                <tr className="text-zinc-500 uppercase tracking-widest">
+                  <th className="px-3 py-2">Row</th>
+                  <th className="px-3 py-2">Tenant</th>
+                  <th className="px-3 py-2">Type</th>
+                  <th className="px-3 py-2">Amount</th>
+                  <th className="px-3 py-2">Note</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-zinc-900">
+                {preview.map((r) => (
+                  <tr key={r.index} className={!r.valid ? 'text-red-500' : 'text-zinc-300'}>
+                    <td className="px-3 py-2">{r.index + 1}</td>
+                    <td className="px-3 py-2">{r.valid ? r.tenantName : '—'}</td>
+                    <td className="px-3 py-2">{r.paymentType || '—'}</td>
+                    <td className="px-3 py-2">{r.valid ? `KSH ${r.amount.toLocaleString()}` : '—'}</td>
+                    <td className="px-3 py-2 text-amber-500">{r.valid ? (r.commissionWarning || '') : r.reason}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {results && (
+        <div className="space-y-4">
+          <ImportResultsSummary results={results} />
+          <button onClick={() => setResults(null)} className="px-4 py-2 rounded-lg text-sm font-semibold bg-zinc-800 text-zinc-300 hover:bg-zinc-700">Import Another File</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DangerZoneSection() {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+
+  return (
+    <div className="bg-red-950/10 border border-red-900/50 rounded-xl p-8 w-full max-w-2xl space-y-6">
+      <div className="space-y-4">
+        <div>
+          <h4 className="text-lg font-bold text-red-500 flex items-center gap-2">
+            <AlertCircle className="w-5 h-5" /> Danger Zone
+          </h4>
+          <p className="text-sm text-zinc-400 mt-1">
+            Resetting the system will permanently delete all units, tenants, payments, service requests, expenses, and logs. This action cannot be undone. Only your landlord account will remain.
+          </p>
+        </div>
+        {error && <div className="p-3 bg-red-500/10 text-red-500 rounded border border-red-500/20 text-sm font-semibold">{error}</div>}
+        {success && <div className="p-3 bg-emerald-500/10 text-emerald-500 rounded border border-emerald-500/20 text-sm font-semibold">{success}</div>}
+        {!showResetConfirm ? (
+          <button
+            onClick={() => setShowResetConfirm(true)}
+            disabled={loading}
+            className="w-full sm:w-auto bg-red-500/10 text-red-500 border border-red-500/50 px-6 py-3 rounded-lg text-sm font-semibold hover:bg-red-500/20 transition-colors flex items-center justify-center gap-2"
+          >
+            <Trash2 className="w-4 h-4" /> Reset Entire System
+          </button>
+        ) : (
+          <div className="space-y-4 p-4 rounded-lg border border-red-500/30 bg-red-500/5">
+            <p className="text-sm font-bold text-red-500">Are you ABSOLUTELY sure? ALL data will be lost!</p>
+            <div className="flex gap-4">
+              <button
+                onClick={async () => {
+                  setLoading(true);
+                  try {
+                    await api.admin.resetSystem();
+                    setSuccess("System successfully reset.");
+                    setShowResetConfirm(false);
+                    setTimeout(() => window.location.reload(), 1500);
+                  } catch (e: any) {
+                    setError(e.message || "Failed to reset system");
+                    setLoading(false);
+                  }
+                }}
+                disabled={loading}
+                className="bg-red-500 hover:bg-red-600 text-white px-6 py-2 rounded-lg text-sm font-bold flex items-center gap-2"
+              >
+                {loading ? 'Resetting...' : 'Yes, Delete Everything'}
+              </button>
+              <button
+                onClick={() => setShowResetConfirm(false)}
+                disabled={loading}
+                className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-4 py-2 rounded-lg text-sm font-semibold"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

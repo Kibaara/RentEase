@@ -77,6 +77,7 @@ export const api = {
       return request(`/water-readings${query}`);
     },
     create: (data: any) => request('/water-readings', { method: 'POST', body: JSON.stringify(data) }),
+    bulkImport: (readings: any[]) => request('/water-readings/bulk-import', { method: 'POST', body: JSON.stringify({ readings }) }),
   },
   invoices: {
     list: () => request('/invoices'),

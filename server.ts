@@ -475,7 +475,7 @@ async function startServer() {
 
   app.post("/api/expenses", requireAuth, isStaff, async (req: any, res) => {
     try {
-      const { type, description, amount, unitNumber, requestId, tokens, reading, status, metadata } = req.body;
+      const { type, description, amount, unitNumber, requestId, tokens, reading, status, metadata, createdAt } = req.body;
 
       // COMMISSION expenses must go through /api/agent/commission/request, which
       // computes the amount server-side. Blocking it here prevents an agent from
@@ -485,8 +485,9 @@ async function startServer() {
       }
 
       const id = crypto.randomUUID();
-      await db.prepare('INSERT INTO expenses (id, type, description, amount, "unitNumber", "requestId", tokens, reading, status, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(id, type, description, amount, unitNumber, requestId || null, tokens || null, reading || null, status || 'APPROVED', metadata ? JSON.stringify(metadata) : null);
+      const insertDate = createdAt ? new Date(createdAt).toISOString() : new Date().toISOString();
+      await db.prepare('INSERT INTO expenses (id, type, description, amount, "unitNumber", "requestId", tokens, reading, status, metadata, "createdAt") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(id, type, description, amount, unitNumber, requestId || null, tokens || null, reading || null, status || 'APPROVED', metadata ? JSON.stringify(metadata) : null, insertDate);
       
       await auditService.log({
         userId: req.user.id,
@@ -692,6 +693,65 @@ async function startServer() {
     }
 
     res.json({ success: true, id });
+  });
+
+  // Bulk import for water meter readings. Deliberately does NOT run the
+  // auto-invoice-generation check that POST /api/water-readings has — that
+  // check compares readings against the CURRENT calendar month, so looping
+  // the single-row endpoint for a backfilled/historical batch would silently
+  // misfire (never correctly trigger the historical month's invoicing, and
+  // could confuse the current month's own completion check). The landlord
+  // triggers invoice generation separately once they're ready.
+  app.post("/api/water-readings/bulk-import", requireAuth, isStaff, async (req: any, res) => {
+    try {
+      const { readings } = req.body;
+      if (!Array.isArray(readings)) {
+        return res.status(400).json({ error: "Expected an array of readings." });
+      }
+
+      const results: { index: number; success: boolean; error?: string }[] = [];
+
+      for (let i = 0; i < readings.length; i++) {
+        const r = readings[i];
+        try {
+          const { tenantId, unitNumber, type, previousReading, presentReading, consumption, rate, amount, createdAt } = r;
+          const id = crypto.randomUUID();
+
+          await db.transaction(async (client) => {
+            await client.query(`
+              INSERT INTO meter_readings (id, "tenantId", "unitNumber", type, "previousReading", "presentReading", consumption, rate, amount, "createdAt")
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            `, [id, tenantId || null, unitNumber || null, type || 'TENANT', previousReading, presentReading, consumption, rate, amount, createdAt || new Date().toISOString()]);
+
+            if (type === 'TENANT' && tenantId) {
+              await client.query('UPDATE users SET "waterReading" = $1, "waterBill" = $2 WHERE id = $3', [presentReading, amount, tenantId]);
+            }
+            if (unitNumber) {
+              await client.query('UPDATE units SET "waterReading" = $1 WHERE "unitNumber" = $2', [presentReading, unitNumber]);
+            }
+          });
+
+          results.push({ index: i, success: true });
+        } catch (rowErr: any) {
+          // Isolated per row so one bad row doesn't abort the whole batch.
+          results.push({ index: i, success: false, error: rowErr.message });
+        }
+      }
+
+      await auditService.log({
+        userId: req.user.id,
+        userEmail: req.user.email,
+        action: 'BULK_IMPORT_WATER_READINGS',
+        entityType: 'WATER_READING',
+        entityId: 'bulk',
+        details: { total: readings.length, succeeded: results.filter(r => r.success).length },
+        ipAddress: req.ip
+      });
+
+      res.json({ results });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
   });
 
   app.get("/api/invoices", requireAuth, async (req: any, res) => {
