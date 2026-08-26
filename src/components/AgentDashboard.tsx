@@ -1354,5 +1354,3 @@ function TenantDetailsModal({ tenant, onClose }: any) {
     </div>
   );
 }
-
-

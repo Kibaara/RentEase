@@ -273,7 +273,7 @@ export default function LandlordDashboard({ onLogout }: any) {
           >
             {activeTab === 'overview' && <OverviewTab units={units} tenants={tenants} payments={payments} expenses={expenses} serviceRequests={requests} stats={stats} onNavigate={setActiveTab} />}
             {activeTab === 'units' && <UnitsTab units={units} tenants={tenants} payments={payments} onRefresh={refresh} />}
-            {activeTab === 'tenants' && <TenantsTab tenants={tenants} units={units} payments={payments} onRefresh={refresh} />}
+            {activeTab === 'tenants' && <TenantsTab tenants={tenants} units={units} onRefresh={refresh} />}
             {activeTab === 'agents' && <AgentsTab agents={agents} onRefresh={refresh} />}
             {activeTab === 'expenses' && <ExpensesTab expenses={expenses} requests={requests} waterReadings={waterReadings} onRefresh={refresh} />}
             {activeTab === 'payments' && <PaymentsTab payments={payments} tenants={tenants} units={units} onRefresh={refresh} />}
@@ -2123,6 +2123,10 @@ function TenantDetailsModal({ tenant, onClose, onRefresh }: any) {
                   className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm text-zinc-100 focus:ring-1 focus:ring-red-500/50"
                   step="0.01"
                 />
+                <p className="text-[10px] text-zinc-600 leading-relaxed">
+                  Editing this mid-month will also change this tenant's contribution to the agent's
+                  commission for the current period, since commission is calculated from this balance.
+                </p>
               </div>
               <div className="space-y-2">
                 <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Security Deposit</label>
@@ -2820,11 +2824,12 @@ function InvoicesTab({ tenants, onRefresh }: any) {
             <AlertCircle className="h-6 w-6 text-amber-500" />
           </div>
           <div className="space-y-1">
-            <h4 className="font-bold text-amber-500">Automated Billing Rules</h4>
+            <h4 className="font-bold text-amber-500">Billing Rules</h4>
             <p className="text-zinc-500 text-sm leading-relaxed max-w-2xl">
-              Monthly invoices are automatically generated on the 1st of every month at midnight. 
-              Each invoice includes the base Rent, Garbage Fee, and any accrued Water Bills. 
-              The system automatically updates the tenant's total balance and resets the monthly water bill counter upon generation.
+              Invoices are generated automatically once the last active tenant's water meter reading is
+              submitted for the month — not on a fixed calendar schedule. Each invoice includes the base
+              Rent, Garbage Fee, and any accrued Water Bills. The system automatically updates the tenant's
+              total balance and resets the monthly water bill counter upon generation.
             </p>
           </div>
         </div>
